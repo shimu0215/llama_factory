@@ -106,7 +106,7 @@ def load_gsm_hard_examples(
 ) -> Tuple[str, list[dict[str, Any]]]:
     from datasets import load_dataset
 
-    dataset_dict = load_dataset(dataset_name, dataset_config, trust_remote_code=True)
+    dataset_dict = load_dataset(dataset_name, dataset_config)
     if split is None:
         for candidate in ("test", "validation", "train"):
             if candidate in dataset_dict:
@@ -167,6 +167,25 @@ def build_wrapped_code(code: str) -> str:
     return code
 
 
+def parse_tool_arguments(raw_arguments: Any) -> dict[str, str]:
+    arguments = raw_arguments
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {"code": arguments}
+
+    if isinstance(arguments, str):
+        return {"code": arguments}
+
+    if isinstance(arguments, dict):
+        if "code" in arguments and isinstance(arguments["code"], str):
+            return {"code": arguments["code"]}
+        return {"code": json.dumps(arguments, ensure_ascii=False)}
+
+    return {"code": str(arguments)}
+
+
 def message_to_dict(message: Any) -> dict[str, Any]:
     content = getattr(message, "content", None)
     reasoning_content = getattr(message, "reasoning_content", None)
@@ -178,7 +197,7 @@ def message_to_dict(message: Any) -> dict[str, Any]:
                 {
                     "id": getattr(tool_call, "id", None),
                     "name": tool_call.function.name,
-                    "arguments": json.loads(tool_call.function.arguments),
+                    "arguments": parse_tool_arguments(tool_call.function.arguments),
                 }
             )
 
@@ -234,7 +253,7 @@ def run_single_example(
 
         for tool_call in assistant_message.tool_calls:
             name = tool_call.function.name
-            arguments = json.loads(tool_call.function.arguments)
+            arguments = parse_tool_arguments(tool_call.function.arguments)
             if name != "python_exec":
                 tool_result = {"stdout": "", "stderr": f"Unsupported tool: {name}", "returncode": -1}
             else:
