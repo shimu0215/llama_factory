@@ -25,7 +25,7 @@ export TRITON_CACHE_DIR=/scratch/wzhao20/triton_cache
 
 mkdir -p /scratch/wzhao20/triton_cache
 mkdir -p /scratch/wzhao20/llama_factory/hpc-results
-mkdir -p /scratch/wzhao20/DOGe-main/outputs/gsm_hard_python_exec_eval
+mkdir -p /scratch/wzhao20/llama_factory/outputs/gsm_hard_python_exec_eval
 
 cd /scratch/wzhao20/llama_factory
 conda activate /scratch/wzhao20/conda_envs/llama-factory311
@@ -69,7 +69,7 @@ done
 
 curl -sf "http://127.0.0.1:${API_PORT}/v1/models" >/dev/null
 
-cd /scratch/wzhao20/DOGe-main
+cd /scratch/wzhao20/llama_factory
 python scripts/run_gsm_hard_python_exec_eval.py \
   --base-url "http://127.0.0.1:${API_PORT}/v1" \
   --model test \
