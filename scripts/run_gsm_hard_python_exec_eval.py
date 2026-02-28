@@ -54,7 +54,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def extract_answer(text: Optional[str]) -> Optional[str]:
+def extract_answer(text: Any) -> Optional[str]:
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
     if not text:
         return None
 
