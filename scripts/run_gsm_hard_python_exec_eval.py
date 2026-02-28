@@ -1,4 +1,5 @@
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -124,9 +125,10 @@ def load_gsm_hard_examples(
 
 
 def execute_python(code: str, timeout: int) -> dict[str, Any]:
+    wrapped_code = build_wrapped_code(code)
     try:
         completed = subprocess.run(
-            [sys.executable, "-I", "-c", code],
+            [sys.executable, "-I", "-c", wrapped_code],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -139,6 +141,30 @@ def execute_python(code: str, timeout: int) -> dict[str, Any]:
         }
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": f"Execution timed out after {timeout} seconds.", "returncode": -1}
+
+
+def build_wrapped_code(code: str) -> str:
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+
+    if not tree.body:
+        return code
+
+    last_stmt = tree.body[-1]
+    if isinstance(last_stmt, ast.Expr):
+        tree.body[-1] = ast.Expr(
+            value=ast.Call(
+                func=ast.Name(id="print", ctx=ast.Load()),
+                args=[last_stmt.value],
+                keywords=[],
+            )
+        )
+        ast.fix_missing_locations(tree)
+        return ast.unparse(tree)
+
+    return code
 
 
 def message_to_dict(message: Any) -> dict[str, Any]:
