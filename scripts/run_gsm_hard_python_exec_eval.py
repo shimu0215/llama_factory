@@ -47,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-config", default="default")
     parser.add_argument("--split", default=None)
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--num-samples", type=int, default=3)
+    parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--save-cot-count", type=int, default=10)
     parser.add_argument("--max-tool-rounds", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=5)
@@ -194,8 +196,10 @@ def message_to_dict(message: Any) -> dict[str, Any]:
     content = getattr(message, "content", None)
     reasoning_content = getattr(message, "reasoning_content", None)
     tool_calls = []
+    step_type = "reasoning"
 
     if getattr(message, "tool_calls", None):
+        step_type = "tool_call"
         for tool_call in message.tool_calls:
             tool_calls.append(
                 {
@@ -207,6 +211,7 @@ def message_to_dict(message: Any) -> dict[str, Any]:
 
     return {
         "role": getattr(message, "role", "assistant"),
+        "step_type": step_type,
         "content": content,
         "reasoning_content": reasoning_content,
         "tool_calls": tool_calls,
@@ -218,6 +223,8 @@ def run_single_example(
     model: str,
     question: str,
     answer: str,
+    sample_id: int,
+    temperature: float,
     max_tool_rounds: int,
     timeout: int,
 ) -> dict[str, Any]:
@@ -226,8 +233,8 @@ def run_single_example(
         {"role": "user", "content": question},
     ]
     trajectory: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": question},
+        {"role": "system", "step_type": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "step_type": "user", "content": question},
     ]
 
     tool_rounds = 0
@@ -239,7 +246,7 @@ def run_single_example(
             model=model,
             messages=messages,
             tools=TOOLS,
-            temperature=0.0,
+            temperature=temperature,
         )
         assistant_message = result.choices[0].message
         trajectory.append(message_to_dict(assistant_message))
@@ -267,6 +274,7 @@ def run_single_example(
             trajectory.append(
                 {
                     "role": "tool",
+                    "step_type": "tool_result",
                     "name": name,
                     "arguments": arguments,
                     "content": tool_result,
@@ -277,6 +285,7 @@ def run_single_example(
     extracted_reference = extract_answer(answer)
 
     return {
+        "sample_id": sample_id,
         "question": question,
         "ground_truth": answer,
         "prediction": final_response,
@@ -290,9 +299,9 @@ def run_single_example(
 
 
 def main() -> None:
+    args = parse_args()
     from openai import OpenAI
 
-    args = parse_args()
     output_dir = ROOT / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -300,16 +309,30 @@ def main() -> None:
     split, examples = load_gsm_hard_examples(args.dataset_name, args.dataset_config, args.split, args.limit)
 
     results = []
-    for example in examples:
-        results.append(
-            run_single_example(
+    grouped_results = []
+    for question_id, example in enumerate(examples):
+        sample_group = []
+        for sample_id in range(args.num_samples):
+            sample_result = run_single_example(
                 client=client,
                 model=args.model,
                 question=example["question"],
                 answer=example["answer"],
+                sample_id=sample_id,
+                temperature=args.temperature,
                 max_tool_rounds=args.max_tool_rounds,
                 timeout=args.timeout,
             )
+            sample_result["question_id"] = question_id
+            results.append(sample_result)
+            sample_group.append(sample_result)
+        grouped_results.append(
+            {
+                "question_id": question_id,
+                "question": example["question"],
+                "ground_truth": example["answer"],
+                "paths": sample_group,
+            }
         )
 
     predictions = [item["prediction"] for item in results]
@@ -320,12 +343,30 @@ def main() -> None:
         "dataset_name": args.dataset_name,
         "split": split,
         "limit": args.limit,
+        "num_samples": args.num_samples,
+        "temperature": args.temperature,
         "save_cot_count": args.save_cot_count,
         "model": args.model,
         "base_url": args.base_url,
         "metrics": metrics,
         "tool_call_rate": sum(1 for item in results if item["tool_rounds"] > 0) / len(results),
+        "sample_accuracy": sum(1 for item in results if item["correct"]) / len(results),
+        "question_accuracy_any": (
+            sum(1 for group in grouped_results if any(path["correct"] for path in group["paths"])) / len(grouped_results)
+        ),
         "samples": [{key: value for key, value in item.items() if key != "trajectory"} for item in results],
+        "questions": [
+            {
+                "question_id": group["question_id"],
+                "question": group["question"],
+                "ground_truth": group["ground_truth"],
+                "paths": [
+                    {key: value for key, value in path.items() if key != "trajectory"}
+                    for path in group["paths"]
+                ],
+            }
+            for group in grouped_results
+        ],
     }
 
     result_path = output_dir / "gsm_hard_python_exec_results.json"
@@ -337,9 +378,12 @@ def main() -> None:
             f.write(
                 json.dumps(
                     {
+                        "question_id": item["question_id"],
+                        "sample_id": item["sample_id"],
                         "question": item["question"],
                         "ground_truth": item["ground_truth"],
                         "prediction": item["prediction"],
+                        "correct": item["correct"],
                         "reasoning_content": item["reasoning_content"],
                         "trajectory": item["trajectory"],
                     },
