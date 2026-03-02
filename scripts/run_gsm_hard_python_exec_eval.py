@@ -46,10 +46,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-name", default="reasoning-machines/gsm-hard")
     parser.add_argument("--dataset-config", default="default")
     parser.add_argument("--split", default=None)
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--num-samples", type=int, default=3)
     parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--save-cot-count", type=int, default=10)
+    parser.add_argument("--save-cot-count", type=int, default=0)
+    parser.add_argument("--cot-shard-size", type=int, default=0)
     parser.add_argument("--max-tool-rounds", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=5)
     parser.add_argument("--output-dir", default="outputs/gsm_hard_python_exec_eval")
@@ -126,6 +127,9 @@ def load_gsm_hard_examples(
         dataset = dataset.rename_column("input", "question")
     if "target" in dataset.column_names and "answer" not in dataset.column_names:
         dataset = dataset.rename_column("target", "answer")
+
+    if limit is None or limit <= 0:
+        limit = len(dataset)
 
     return split, [dataset[idx] for idx in range(min(limit, len(dataset)))]
 
@@ -346,6 +350,7 @@ def main() -> None:
         "num_samples": args.num_samples,
         "temperature": args.temperature,
         "save_cot_count": args.save_cot_count,
+        "cot_shard_size": args.cot_shard_size,
         "model": args.model,
         "base_url": args.base_url,
         "metrics": metrics,
@@ -370,29 +375,38 @@ def main() -> None:
     }
 
     result_path = output_dir / "gsm_hard_python_exec_results.json"
-    cot_path = output_dir / "gsm_hard_python_exec_cot.jsonl"
+    effective_save_cot_count = len(results) if args.save_cot_count <= 0 else min(args.save_cot_count, len(results))
+    cot_records = [
+        {
+            "question_id": item["question_id"],
+            "sample_id": item["sample_id"],
+            "question": item["question"],
+            "ground_truth": item["ground_truth"],
+            "prediction": item["prediction"],
+            "correct": item["correct"],
+            "reasoning_content": item["reasoning_content"],
+            "trajectory": item["trajectory"],
+        }
+        for item in results[:effective_save_cot_count]
+    ]
 
     result_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    with cot_path.open("w", encoding="utf-8") as f:
-        for item in results[: args.save_cot_count]:
-            f.write(
-                json.dumps(
-                    {
-                        "question_id": item["question_id"],
-                        "sample_id": item["sample_id"],
-                        "question": item["question"],
-                        "ground_truth": item["ground_truth"],
-                        "prediction": item["prediction"],
-                        "correct": item["correct"],
-                        "reasoning_content": item["reasoning_content"],
-                        "trajectory": item["trajectory"],
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+    cot_paths = []
+    if args.cot_shard_size and args.cot_shard_size > 0:
+        for shard_id, start in enumerate(range(0, len(cot_records), args.cot_shard_size)):
+            shard_path = output_dir / f"gsm_hard_python_exec_cot_part_{shard_id:03d}.jsonl"
+            cot_paths.append(str(shard_path))
+            with shard_path.open("w", encoding="utf-8") as f:
+                for record in cot_records[start : start + args.cot_shard_size]:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    else:
+        cot_path = output_dir / "gsm_hard_python_exec_cot.jsonl"
+        cot_paths.append(str(cot_path))
+        with cot_path.open("w", encoding="utf-8") as f:
+            for record in cot_records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(json.dumps({"result_path": str(result_path), "cot_path": str(cot_path), "metrics": metrics}, ensure_ascii=False))
+    print(json.dumps({"result_path": str(result_path), "cot_paths": cot_paths, "metrics": metrics}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

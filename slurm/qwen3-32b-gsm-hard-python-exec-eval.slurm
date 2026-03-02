@@ -71,6 +71,8 @@ curl -sf "http://127.0.0.1:${API_PORT}/v1/models" >/dev/null
 python scripts/run_gsm_hard_python_exec_eval.py \
   --base-url "http://127.0.0.1:${API_PORT}/v1" \
   --model test \
-  --limit 20 \
-  --save-cot-count 10 \
+  --limit 0 \
+  --num-samples 3 \
+  --save-cot-count 0 \
+  --cot-shard-size 200 \
   --output-dir outputs/qwen3_32b_gsm_hard_python_exec_eval
