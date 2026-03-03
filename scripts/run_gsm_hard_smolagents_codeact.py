@@ -33,11 +33,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-name", default="reasoning-machines/gsm-hard")
     parser.add_argument("--dataset-config", default="default")
     parser.add_argument("--split", default=None)
-    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--num-samples", type=int, default=3)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--max-steps", type=int, default=6)
     parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument("--record-shard-size", type=int, default=0)
+    parser.add_argument("--group-shard-size", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/qwen3_4b_gsm_hard_smolagents_codeact")
     return parser.parse_args()
 
@@ -256,31 +258,55 @@ def main() -> None:
         "num_samples": args.num_samples,
         "temperature": args.temperature,
         "max_steps": args.max_steps,
+        "record_shard_size": args.record_shard_size,
+        "group_shard_size": args.group_shard_size,
         "model": args.model,
         "base_url": args.base_url,
         "metrics": metrics,
         "sample_accuracy": sum(1 for item in records if item["correct"]) / len(records),
         "question_accuracy_any": sum(1 for group in grouped if any(path["correct"] for path in group["paths"])) / len(grouped),
         "records_count": len(records),
+        "questions_count": len(grouped),
     }
 
     summary_path = output_dir / "gsm_hard_codeact_summary.json"
-    records_path = output_dir / "gsm_hard_codeact_records.jsonl"
-    grouped_path = output_dir / "gsm_hard_codeact_grouped.json"
-
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    with records_path.open("w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    grouped_path.write_text(json.dumps(grouped, ensure_ascii=False, indent=2), encoding="utf-8")
+    records_paths: list[str] = []
+    if args.record_shard_size and args.record_shard_size > 0:
+        for shard_id, start in enumerate(range(0, len(records), args.record_shard_size)):
+            records_path = output_dir / f"gsm_hard_codeact_records_part_{shard_id:03d}.jsonl"
+            records_paths.append(str(records_path))
+            with records_path.open("w", encoding="utf-8") as f:
+                for record in records[start : start + args.record_shard_size]:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    else:
+        records_path = output_dir / "gsm_hard_codeact_records.jsonl"
+        records_paths.append(str(records_path))
+        with records_path.open("w", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    grouped_paths: list[str] = []
+    if args.group_shard_size and args.group_shard_size > 0:
+        for shard_id, start in enumerate(range(0, len(grouped), args.group_shard_size)):
+            grouped_path = output_dir / f"gsm_hard_codeact_grouped_part_{shard_id:03d}.json"
+            grouped_paths.append(str(grouped_path))
+            grouped_path.write_text(
+                json.dumps(grouped[start : start + args.group_shard_size], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    else:
+        grouped_path = output_dir / "gsm_hard_codeact_grouped.json"
+        grouped_paths.append(str(grouped_path))
+        grouped_path.write_text(json.dumps(grouped, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(
         json.dumps(
             {
                 "summary_path": str(summary_path),
-                "records_path": str(records_path),
-                "grouped_path": str(grouped_path),
+                "records_paths": records_paths,
+                "grouped_paths": grouped_paths,
                 "metrics": metrics,
             },
             ensure_ascii=False,
