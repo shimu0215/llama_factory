@@ -53,8 +53,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-API_PORT=$API_PORT llamafactory-cli api examples/inference/qwen3.yaml \
-  infer_backend=vllm \
+API_PORT=$API_PORT llamafactory-cli api examples/inference/qwen3_4b_codeact.yaml \
   vllm_enforce_eager=true \
   > hpc-results/lf-qwen3-4b-codeact-api-${SLURM_JOB_ID}.log 2>&1 &
 API_PID=$!
