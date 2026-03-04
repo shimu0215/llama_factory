@@ -144,10 +144,30 @@ class RollingMemoryCodeAgent(CodeAgent):
         self.max_observation_chars = max_observation_chars
         self.max_step_chars = max_step_chars
 
+    def _message_role(self, message: Any) -> Any:
+        if isinstance(message, dict):
+            return message.get("role")
+        return getattr(message, "role", None)
+
+    def _message_content(self, message: Any) -> Any:
+        if isinstance(message, dict):
+            return message.get("content", [])
+        return getattr(message, "content", [])
+
+    def _replace_message_content(self, message: Any, content: Any) -> Any:
+        if isinstance(message, dict):
+            return {**message, "content": content}
+        if hasattr(message, "model_copy"):
+            return message.model_copy(update={"content": content})
+        if hasattr(message, "copy"):
+            return message.copy(update={"content": content})
+        message.content = content
+        return message
+
     def _estimate_tokens(self, messages: list[dict[str, Any]]) -> int:
         text_chars = 0
         for message in messages:
-            content = message.get("content", [])
+            content = self._message_content(message)
             if isinstance(content, str):
                 text_chars += len(content)
                 continue
@@ -159,10 +179,10 @@ class RollingMemoryCodeAgent(CodeAgent):
     def _truncate_message_text(self, messages: list[dict[str, Any]], max_chars: int, observation_chars: int) -> list[dict[str, Any]]:
         compacted: list[dict[str, Any]] = []
         for message in messages:
-            content = message.get("content", [])
+            content = self._message_content(message)
             new_content = []
             if isinstance(content, str):
-                compacted.append({**message, "content": truncate_text(content, max_chars)})
+                compacted.append(self._replace_message_content(message, truncate_text(content, max_chars)))
                 continue
             for item in content:
                 if not isinstance(item, dict) or item.get("type") != "text":
@@ -171,7 +191,7 @@ class RollingMemoryCodeAgent(CodeAgent):
                 text = item.get("text", "")
                 limit = observation_chars if "Observation:" in text else max_chars
                 new_content.append({**item, "text": truncate_text(text, limit)})
-            compacted.append({**message, "content": new_content})
+            compacted.append(self._replace_message_content(message, new_content))
         return compacted
 
     def _summarize_steps(self, steps: list[Any], max_chars: int) -> str:
