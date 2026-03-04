@@ -7,6 +7,7 @@ from typing import Any, Optional
 from datasets import load_dataset
 from smolagents import CodeAgent, OpenAIModel
 from smolagents.monitoring import LogLevel
+from tqdm import tqdm
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,46 @@ def load_gsm_hard_examples(dataset_name: str, dataset_config: str, split: Option
         limit = len(dataset)
 
     return split, [dataset[idx] for idx in range(min(limit, len(dataset)))]
+
+
+class JsonlShardWriter:
+    def __init__(self, output_dir: Path, prefix: str, shard_size: int) -> None:
+        self.output_dir = output_dir
+        self.prefix = prefix
+        self.shard_size = shard_size
+        self.current_shard = 0
+        self.current_count = 0
+        self.paths: list[str] = []
+
+    def open_new_shard(self) -> Path:
+        if self.shard_size > 0:
+            path = self.output_dir / f"{self.prefix}_part_{self.current_shard:03d}.jsonl"
+        else:
+            path = self.output_dir / f"{self.prefix}.jsonl"
+        if str(path) not in self.paths:
+            self.paths.append(str(path))
+        return path
+
+    def write(self, item: dict[str, Any]) -> None:
+        if self.shard_size > 0 and self.current_count >= self.shard_size:
+            self.current_shard += 1
+            self.current_count = 0
+        path = self.open_new_shard()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        self.current_count += 1
+
+
+def cleanup_previous_outputs(output_dir: Path) -> None:
+    patterns = [
+        "gsm_hard_codeact_records*.jsonl",
+        "gsm_hard_codeact_grouped*.jsonl",
+        "gsm_hard_codeact_grouped*.json",
+        "gsm_hard_codeact_summary.json",
+    ]
+    for pattern in patterns:
+        for path in output_dir.glob(pattern):
+            path.unlink()
 
 
 def truncate_text(text: Any, max_chars: int) -> str:
@@ -417,13 +458,21 @@ def main() -> None:
     args = parse_args()
     output_dir = ROOT / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_previous_outputs(output_dir)
 
     split, examples = load_gsm_hard_examples(args.dataset_name, args.dataset_config, args.split, args.limit)
 
-    records: list[dict[str, Any]] = []
-    grouped: list[dict[str, Any]] = []
+    records_writer = JsonlShardWriter(output_dir, "gsm_hard_codeact_records", args.record_shard_size)
+    grouped_writer = JsonlShardWriter(output_dir, "gsm_hard_codeact_grouped", args.group_shard_size)
 
-    for question_id, example in enumerate(examples):
+    total_records = 0
+    total_questions = 0
+    sample_correct = 0
+    extracted_count = 0
+    question_accuracy_any = 0
+
+    progress = tqdm(examples, desc="gsm-hard questions", unit="q", dynamic_ncols=True)
+    for question_id, example in enumerate(progress):
         paths = []
         for sample_id in range(args.num_samples):
             record = run_single_sample(
@@ -433,21 +482,36 @@ def main() -> None:
                 answer=example["answer"],
                 args=args,
             )
-            records.append(record)
+            records_writer.write(record)
             paths.append(record)
+            total_records += 1
+            if record["correct"]:
+                sample_correct += 1
+            if record["extracted_prediction"] is not None:
+                extracted_count += 1
 
-        grouped.append(
-            {
-                "question_id": question_id,
-                "question": example["question"],
-                "ground_truth": example["answer"],
-                "paths": paths,
-            }
+        grouped_item = {
+            "question_id": question_id,
+            "question": example["question"],
+            "ground_truth": example["answer"],
+            "paths": paths,
+        }
+        grouped_writer.write(grouped_item)
+        total_questions += 1
+        if any(path["correct"] for path in paths):
+            question_accuracy_any += 1
+        progress.set_postfix(
+            questions=total_questions,
+            samples=total_records,
+            sample_acc=f"{(sample_correct / total_records) if total_records else 0.0:.3f}",
+            any_acc=f"{(question_accuracy_any / total_questions) if total_questions else 0.0:.3f}",
         )
+    progress.close()
 
-    predictions = [item["final_answer"] for item in records]
-    references = [item["ground_truth"] for item in records]
-    metrics = evaluate_predictions(predictions, references)
+    metrics = {
+        "accuracy": sample_correct / total_records if total_records else 0.0,
+        "extraction_rate": extracted_count / total_records if total_records else 0.0,
+    }
 
     summary = {
         "dataset_name": args.dataset_name,
@@ -466,50 +530,21 @@ def main() -> None:
         "model": args.model,
         "base_url": args.base_url,
         "metrics": metrics,
-        "sample_accuracy": sum(1 for item in records if item["correct"]) / len(records),
-        "question_accuracy_any": sum(1 for group in grouped if any(path["correct"] for path in group["paths"])) / len(grouped),
-        "records_count": len(records),
-        "questions_count": len(grouped),
+        "sample_accuracy": sample_correct / total_records if total_records else 0.0,
+        "question_accuracy_any": question_accuracy_any / total_questions if total_questions else 0.0,
+        "records_count": total_records,
+        "questions_count": total_questions,
     }
 
     summary_path = output_dir / "gsm_hard_codeact_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    records_paths: list[str] = []
-    if args.record_shard_size and args.record_shard_size > 0:
-        for shard_id, start in enumerate(range(0, len(records), args.record_shard_size)):
-            records_path = output_dir / f"gsm_hard_codeact_records_part_{shard_id:03d}.jsonl"
-            records_paths.append(str(records_path))
-            with records_path.open("w", encoding="utf-8") as f:
-                for record in records[start : start + args.record_shard_size]:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    else:
-        records_path = output_dir / "gsm_hard_codeact_records.jsonl"
-        records_paths.append(str(records_path))
-        with records_path.open("w", encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    grouped_paths: list[str] = []
-    if args.group_shard_size and args.group_shard_size > 0:
-        for shard_id, start in enumerate(range(0, len(grouped), args.group_shard_size)):
-            grouped_path = output_dir / f"gsm_hard_codeact_grouped_part_{shard_id:03d}.json"
-            grouped_paths.append(str(grouped_path))
-            grouped_path.write_text(
-                json.dumps(grouped[start : start + args.group_shard_size], ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-    else:
-        grouped_path = output_dir / "gsm_hard_codeact_grouped.json"
-        grouped_paths.append(str(grouped_path))
-        grouped_path.write_text(json.dumps(grouped, ensure_ascii=False, indent=2), encoding="utf-8")
-
     print(
         json.dumps(
             {
                 "summary_path": str(summary_path),
-                "records_paths": records_paths,
-                "grouped_paths": grouped_paths,
+                "records_paths": records_writer.paths,
+                "grouped_paths": grouped_writer.paths,
                 "metrics": metrics,
             },
             ensure_ascii=False,
