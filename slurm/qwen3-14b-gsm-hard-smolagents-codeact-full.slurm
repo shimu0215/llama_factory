@@ -73,7 +73,7 @@ python scripts/run_gsm_hard_smolagents_codeact.py \
   --limit 0 \
   --num-samples 3 \
   --temperature 0.7 \
-  --max-steps 6 \
+  --max-steps 4 \
   --max-tokens 2048 \
   --record-shard-size 200 \
   --group-shard-size 50 \
