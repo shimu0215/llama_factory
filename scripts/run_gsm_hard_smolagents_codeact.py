@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-step-chars", type=int, default=1200)
     parser.add_argument("--record-shard-size", type=int, default=0)
     parser.add_argument("--group-shard-size", type=int, default=0)
+    parser.add_argument("--context-shard-size", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/qwen3_4b_gsm_hard_smolagents_codeact")
     return parser.parse_args()
 
@@ -151,6 +152,7 @@ def cleanup_previous_outputs(output_dir: Path) -> None:
     patterns = [
         "gsm_hard_codeact_records*.jsonl",
         "gsm_hard_codeact_grouped*.jsonl",
+        "gsm_hard_codeact_contexts*.jsonl",
         "gsm_hard_codeact_grouped*.json",
         "gsm_hard_codeact_summary.json",
     ]
@@ -184,6 +186,7 @@ class RollingMemoryCodeAgent(CodeAgent):
         self.max_summary_chars = max_summary_chars
         self.max_observation_chars = max_observation_chars
         self.max_step_chars = max_step_chars
+        self.visible_contexts: list[dict[str, Any]] = []
 
     def _message_role(self, message: Any) -> Any:
         if isinstance(message, dict):
@@ -204,6 +207,22 @@ class RollingMemoryCodeAgent(CodeAgent):
             return message.copy(update={"content": content})
         message.content = content
         return message
+
+    def _serialize_message(self, message: Any) -> dict[str, Any]:
+        content = self._message_content(message)
+        if isinstance(content, str):
+            serialized_content: Any = content
+        else:
+            serialized_content = []
+            for item in content:
+                if isinstance(item, dict):
+                    serialized_content.append(item)
+                else:
+                    serialized_content.append(str(item))
+        return {
+            "role": str(self._message_role(message)),
+            "content": serialized_content,
+        }
 
     def _estimate_tokens(self, messages: list[dict[str, Any]]) -> int:
         text_chars = 0
@@ -303,6 +322,22 @@ class RollingMemoryCodeAgent(CodeAgent):
         if summary_mode:
             return super().write_memory_to_messages(summary_mode=True)
 
+        full_messages = super().write_memory_to_messages(summary_mode=False)
+        full_estimated_tokens = self._estimate_tokens(full_messages)
+        if full_estimated_tokens <= self.prompt_budget_tokens:
+            self.visible_contexts.append(
+                {
+                    "call_index": len(self.visible_contexts),
+                    "compressed": False,
+                    "compression_mode": "full_memory",
+                    "budget_triggered": False,
+                    "estimated_tokens_before": full_estimated_tokens,
+                    "estimated_tokens_after": full_estimated_tokens,
+                    "messages": [self._serialize_message(message) for message in full_messages],
+                }
+            )
+            return full_messages
+
         recent_steps_count = self.recent_steps
         summary_chars = self.max_summary_chars
         observation_chars = self.max_observation_chars
@@ -327,6 +362,21 @@ class RollingMemoryCodeAgent(CodeAgent):
                 break
             messages = self._build_compacted_messages(recent_steps_count, summary_chars, observation_chars, step_chars)
 
+        self.visible_contexts.append(
+            {
+                "call_index": len(self.visible_contexts),
+                "compressed": True,
+                "compression_mode": "rolling_summary_window",
+                "budget_triggered": True,
+                "estimated_tokens_before": full_estimated_tokens,
+                "estimated_tokens_after": self._estimate_tokens(messages),
+                "recent_steps_used": recent_steps_count,
+                "summary_chars_used": summary_chars,
+                "observation_chars_used": observation_chars,
+                "step_chars_used": step_chars,
+                "messages": [self._serialize_message(message) for message in messages],
+            }
+        )
         return messages
 
 
@@ -451,6 +501,7 @@ def run_single_sample(
         "steps": full_result.steps,
         "trajectory": trajectory,
         "cot_text": cot_text,
+        "visible_contexts": agent.visible_contexts,
     }
 
 
@@ -464,6 +515,8 @@ def main() -> None:
 
     records_writer = JsonlShardWriter(output_dir, "gsm_hard_codeact_records", args.record_shard_size)
     grouped_writer = JsonlShardWriter(output_dir, "gsm_hard_codeact_grouped", args.group_shard_size)
+    context_shard_size = args.context_shard_size if args.context_shard_size > 0 else args.record_shard_size
+    contexts_writer = JsonlShardWriter(output_dir, "gsm_hard_codeact_contexts", context_shard_size)
 
     total_records = 0
     total_questions = 0
@@ -482,7 +535,19 @@ def main() -> None:
                 answer=example["answer"],
                 args=args,
             )
+            visible_contexts = record.pop("visible_contexts", [])
             records_writer.write(record)
+            contexts_writer.write(
+                {
+                    "question_id": record["question_id"],
+                    "sample_id": record["sample_id"],
+                    "question": record["question"],
+                    "ground_truth": record["ground_truth"],
+                    "correct": record["correct"],
+                    "state": record["state"],
+                    "visible_contexts": visible_contexts,
+                }
+            )
             paths.append(record)
             total_records += 1
             if record["correct"]:
@@ -527,6 +592,7 @@ def main() -> None:
         "max_step_chars": args.max_step_chars,
         "record_shard_size": args.record_shard_size,
         "group_shard_size": args.group_shard_size,
+        "context_shard_size": context_shard_size,
         "model": args.model,
         "base_url": args.base_url,
         "metrics": metrics,
@@ -545,6 +611,7 @@ def main() -> None:
                 "summary_path": str(summary_path),
                 "records_paths": records_writer.paths,
                 "grouped_paths": grouped_writer.paths,
+                "context_paths": contexts_writer.paths,
                 "metrics": metrics,
             },
             ensure_ascii=False,
