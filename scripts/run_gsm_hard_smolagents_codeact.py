@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--max-steps", type=int, default=6)
     parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument("--recent-steps", type=int, default=2)
+    parser.add_argument("--prompt-budget-tokens", type=int, default=12000)
+    parser.add_argument("--max-summary-chars", type=int, default=1200)
+    parser.add_argument("--max-observation-chars", type=int, default=1500)
+    parser.add_argument("--max-step-chars", type=int, default=1200)
     parser.add_argument("--record-shard-size", type=int, default=0)
     parser.add_argument("--group-shard-size", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/qwen3_4b_gsm_hard_smolagents_codeact")
@@ -113,7 +118,170 @@ def load_gsm_hard_examples(dataset_name: str, dataset_config: str, split: Option
     return split, [dataset[idx] for idx in range(min(limit, len(dataset)))]
 
 
-def create_agent(base_url: str, api_key: str, model: str, temperature: float, max_tokens: int, max_steps: int) -> CodeAgent:
+def truncate_text(text: Any, max_chars: int) -> str:
+    text = "" if text is None else str(text)
+    if len(text) <= max_chars:
+        return text
+    keep = max(32, max_chars // 2)
+    return f"{text[:keep]}\n...[truncated]...\n{text[-keep:]}"
+
+
+class RollingMemoryCodeAgent(CodeAgent):
+    def __init__(
+        self,
+        *args: Any,
+        recent_steps: int,
+        prompt_budget_tokens: int,
+        max_summary_chars: int,
+        max_observation_chars: int,
+        max_step_chars: int,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.recent_steps = recent_steps
+        self.prompt_budget_tokens = prompt_budget_tokens
+        self.max_summary_chars = max_summary_chars
+        self.max_observation_chars = max_observation_chars
+        self.max_step_chars = max_step_chars
+
+    def _estimate_tokens(self, messages: list[dict[str, Any]]) -> int:
+        text_chars = 0
+        for message in messages:
+            content = message.get("content", [])
+            if isinstance(content, str):
+                text_chars += len(content)
+                continue
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_chars += len(item.get("text", ""))
+        return text_chars // 4
+
+    def _truncate_message_text(self, messages: list[dict[str, Any]], max_chars: int, observation_chars: int) -> list[dict[str, Any]]:
+        compacted: list[dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content", [])
+            new_content = []
+            if isinstance(content, str):
+                compacted.append({**message, "content": truncate_text(content, max_chars)})
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "text":
+                    new_content.append(item)
+                    continue
+                text = item.get("text", "")
+                limit = observation_chars if "Observation:" in text else max_chars
+                new_content.append({**item, "text": truncate_text(text, limit)})
+            compacted.append({**message, "content": new_content})
+        return compacted
+
+    def _summarize_steps(self, steps: list[Any], max_chars: int) -> str:
+        if not steps or max_chars <= 0:
+            return ""
+        lines = ["Previous progress summary:"]
+        for idx, step in enumerate(steps, start=1):
+            if hasattr(step, "plan") and getattr(step, "plan", None):
+                lines.append(f"- Plan {idx}: {truncate_text(step.plan, 160)}")
+                continue
+
+            parts = []
+            model_output = getattr(step, "model_output", None)
+            if model_output:
+                parts.append(f"reasoning={truncate_text(model_output, 160)}")
+            tool_calls = getattr(step, "tool_calls", None) or []
+            if tool_calls:
+                parts.append(f"tool_calls={truncate_text(tool_calls[0], 160)}")
+            observations = getattr(step, "observations", None)
+            if observations:
+                parts.append(f"observation={truncate_text(observations, 200)}")
+            error = getattr(step, "error", None)
+            if error:
+                parts.append(f"error={truncate_text(error, 120)}")
+            if parts:
+                lines.append(f"- Step {idx}: " + "; ".join(parts))
+
+        return truncate_text("\n".join(lines), max_chars)
+
+    def _build_compacted_messages(
+        self,
+        recent_steps_count: int,
+        summary_chars: int,
+        observation_chars: int,
+        step_chars: int,
+    ) -> list[dict[str, Any]]:
+        messages = self.memory.system_prompt.to_messages(summary_mode=False)
+        steps = list(self.memory.steps)
+        if not steps:
+            return messages
+
+        first_step = steps[0]
+        if hasattr(first_step, "task"):
+            messages.extend(first_step.to_messages(summary_mode=False))
+            action_steps = steps[1:]
+        else:
+            action_steps = steps
+
+        recent_steps_count = max(1, min(recent_steps_count, len(action_steps))) if action_steps else 0
+        old_steps = action_steps[:-recent_steps_count] if recent_steps_count else action_steps
+        recent_steps = action_steps[-recent_steps_count:] if recent_steps_count else []
+
+        summary = self._summarize_steps(old_steps, summary_chars)
+        if summary:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": summary}],
+                }
+            )
+
+        for step in recent_steps:
+            messages.extend(step.to_messages(summary_mode=False))
+
+        return self._truncate_message_text(messages, step_chars, observation_chars)
+
+    def write_memory_to_messages(self, summary_mode: Optional[bool] = False) -> list[dict[str, Any]]:
+        if summary_mode:
+            return super().write_memory_to_messages(summary_mode=True)
+
+        recent_steps_count = self.recent_steps
+        summary_chars = self.max_summary_chars
+        observation_chars = self.max_observation_chars
+        step_chars = self.max_step_chars
+        messages = self._build_compacted_messages(recent_steps_count, summary_chars, observation_chars, step_chars)
+
+        while self._estimate_tokens(messages) > self.prompt_budget_tokens:
+            changed = False
+            if summary_chars > 300:
+                summary_chars = max(300, summary_chars // 2)
+                changed = True
+            elif observation_chars > 400:
+                observation_chars = max(400, observation_chars // 2)
+                changed = True
+            elif step_chars > 400:
+                step_chars = max(400, step_chars // 2)
+                changed = True
+            elif recent_steps_count > 1:
+                recent_steps_count -= 1
+                changed = True
+            if not changed:
+                break
+            messages = self._build_compacted_messages(recent_steps_count, summary_chars, observation_chars, step_chars)
+
+        return messages
+
+
+def create_agent(
+    base_url: str,
+    api_key: str,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    max_steps: int,
+    recent_steps: int,
+    prompt_budget_tokens: int,
+    max_summary_chars: int,
+    max_observation_chars: int,
+    max_step_chars: int,
+) -> CodeAgent:
     model_client = OpenAIModel(
         model_id=model,
         api_base=base_url,
@@ -121,12 +289,17 @@ def create_agent(base_url: str, api_key: str, model: str, temperature: float, ma
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    return CodeAgent(
+    return RollingMemoryCodeAgent(
         tools=[],
         model=model_client,
         instructions=CODEACT_INSTRUCTIONS,
         additional_authorized_imports=["math", "statistics", "fractions", "decimal"],
         max_steps=max_steps,
+        recent_steps=recent_steps,
+        prompt_budget_tokens=prompt_budget_tokens,
+        max_summary_chars=max_summary_chars,
+        max_observation_chars=max_observation_chars,
+        max_step_chars=max_step_chars,
         verbosity_level=LogLevel.ERROR,
         stream_outputs=False,
         use_structured_outputs_internally=False,
@@ -188,6 +361,11 @@ def run_single_sample(
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         max_steps=args.max_steps,
+        recent_steps=args.recent_steps,
+        prompt_budget_tokens=args.prompt_budget_tokens,
+        max_summary_chars=args.max_summary_chars,
+        max_observation_chars=args.max_observation_chars,
+        max_step_chars=args.max_step_chars,
     )
     full_result = agent.run(question, return_full_result=True)
     final_answer = str(full_result.output)
@@ -258,6 +436,11 @@ def main() -> None:
         "num_samples": args.num_samples,
         "temperature": args.temperature,
         "max_steps": args.max_steps,
+        "recent_steps": args.recent_steps,
+        "prompt_budget_tokens": args.prompt_budget_tokens,
+        "max_summary_chars": args.max_summary_chars,
+        "max_observation_chars": args.max_observation_chars,
+        "max_step_chars": args.max_step_chars,
         "record_shard_size": args.record_shard_size,
         "group_shard_size": args.group_shard_size,
         "model": args.model,

@@ -73,8 +73,13 @@ python scripts/run_gsm_hard_smolagents_codeact.py \
   --limit 0 \
   --num-samples 3 \
   --temperature 0.7 \
-  --max-steps 6 \
-  --max-tokens 2048 \
+  --max-steps 5 \
+  --max-tokens 1024 \
+  --recent-steps 2 \
+  --prompt-budget-tokens 12000 \
+  --max-summary-chars 1200 \
+  --max-observation-chars 1500 \
+  --max-step-chars 1200 \
   --record-shard-size 200 \
   --group-shard-size 50 \
   --output-dir outputs/qwen3_32b_gsm_hard_smolagents_codeact
