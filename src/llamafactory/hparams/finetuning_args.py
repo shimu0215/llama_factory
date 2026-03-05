@@ -538,6 +538,22 @@ class FinetuningArguments(
         default=False,
         metadata={"help": "Whether or not to compute effective tokens per second."},
     )
+    use_uncertainty_entropy_loss: bool = field(
+        default=False,
+        metadata={"help": "Whether to add uncertainty entropy loss on top of SFT loss."},
+    )
+    uncertainty_entropy_weight: float = field(
+        default=0.05,
+        metadata={"help": "Weight of uncertainty entropy loss. Final loss = sft_loss + weight * entropy_loss."},
+    )
+    uncertainty_mc_samples: int = field(
+        default=3,
+        metadata={"help": "Number of Monte Carlo passes used to compose the target token distribution."},
+    )
+    uncertainty_noise_std: float = field(
+        default=0.02,
+        metadata={"help": "Gaussian noise std added to logits when building the MC target distribution."},
+    )
 
     def __post_init__(self):
         def split_arg(arg):
@@ -595,6 +611,12 @@ class FinetuningArguments(
 
             if self.pissa_init:
                 raise ValueError("`pissa_init` is only valid for LoRA training.")
+
+        if self.use_uncertainty_entropy_loss and self.uncertainty_mc_samples < 2:
+            raise ValueError("`uncertainty_mc_samples` should be >= 2 when enabling uncertainty entropy loss.")
+
+        if self.uncertainty_entropy_weight < 0:
+            raise ValueError("`uncertainty_entropy_weight` must be non-negative.")
 
     def to_dict(self) -> dict[str, Any]:
         args = asdict(self)

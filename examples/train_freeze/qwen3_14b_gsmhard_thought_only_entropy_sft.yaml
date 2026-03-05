@@ -1,0 +1,52 @@
+### model
+model_name_or_path: Qwen/Qwen3-14B-Instruct-2507
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: freeze
+freeze_trainable_layers: 0
+freeze_trainable_modules: all
+freeze_extra_modules: lm_head
+use_uncertainty_entropy_loss: true
+uncertainty_entropy_weight: 0.05
+uncertainty_mc_samples: 3
+uncertainty_noise_std: 0.02
+
+### dataset
+# Register this dataset in `data/dataset_info.json` first.
+dataset: gsm_hard_codeact_sft_thought_only
+template: qwen3_nothink
+cutoff_len: 4096
+max_samples: null
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 4
+
+### output
+output_dir: saves/qwen3-14b/freeze/gsmhard_thought_only_entropy_sft
+logging_steps: 5
+save_steps: 200
+plot_loss: true
+overwrite_output_dir: true
+save_only_model: false
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-5
+num_train_epochs: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+bf16: true
+ddp_timeout: 180000000
+resume_from_checkpoint: null
+
+### eval
+# eval_dataset: gsm_hard_codeact_sft_thought_only
+# val_size: 0.01
+# per_device_eval_batch_size: 1
+# eval_strategy: steps
+# eval_steps: 200

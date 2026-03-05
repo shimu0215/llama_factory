@@ -149,6 +149,8 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
     @override
     def compute_loss(self, model, inputs, *args, **kwargs):
+        return_outputs = kwargs.pop("return_outputs", False)
+
         if self.finetuning_args.use_asft_loss:
             with torch.no_grad():
                 ref_outputs = self.ref_model(
@@ -157,9 +159,49 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
                 )
                 ref_logits = ref_outputs.logits
             outputs = model(**inputs)
-            return self.compute_loss_func(outputs, inputs["labels"], ref_logits)
+            loss = self.compute_loss_func(outputs, inputs["labels"], ref_logits)
         else:
-            return super().compute_loss(model, inputs, *args, **kwargs)
+            loss, outputs = super().compute_loss(model, inputs, *args, return_outputs=True, **kwargs)
+
+        if self.finetuning_args.use_uncertainty_entropy_loss and "labels" in inputs:
+            entropy_loss = self._compute_uncertainty_entropy_loss(model, inputs, outputs.logits)
+            loss = loss + self.finetuning_args.uncertainty_entropy_weight * entropy_loss
+
+        return (loss, outputs) if return_outputs else loss
+
+    def _compute_uncertainty_entropy_loss(
+        self,
+        model: "torch.nn.Module",
+        inputs: dict[str, "torch.Tensor"],
+        current_logits: "torch.Tensor",
+    ) -> "torch.Tensor":
+        labels = inputs["labels"]
+        shifted_labels = labels[..., 1:].contiguous()
+        valid_mask = shifted_labels.ne(IGNORE_INDEX)
+        if not torch.any(valid_mask):
+            return torch.zeros((), device=current_logits.device, dtype=current_logits.dtype)
+
+        model_inputs = {k: v for k, v in inputs.items() if k != "labels"}
+        mc_samples = self.finetuning_args.uncertainty_mc_samples
+        noise_std = self.finetuning_args.uncertainty_noise_std
+
+        with torch.no_grad():
+            target_probs = None
+            for _ in range(mc_samples):
+                logits = model(**model_inputs).logits[..., :-1, :].float()
+                if noise_std > 0:
+                    logits = logits + torch.randn_like(logits) * noise_std
+                probs = torch.softmax(logits, dim=-1)
+                target_probs = probs if target_probs is None else (target_probs + probs)
+
+            target_probs = target_probs / float(mc_samples)
+
+        new_log_probs = torch.log_softmax(current_logits[..., :-1, :].float(), dim=-1)
+        token_cross_entropy = -(target_probs * new_log_probs).sum(dim=-1)
+        mean_cross_entropy = token_cross_entropy.masked_select(valid_mask).mean()
+
+        # Maximize CE(q, p_theta) to increase uncertainty around the ensemble target distribution.
+        return -mean_cross_entropy
 
     @override
     def prediction_step(

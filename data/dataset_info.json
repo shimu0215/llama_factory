@@ -2,6 +2,13 @@
   "identity": {
     "file_name": "identity.json"
   },
+  "gsm_hard_codeact_sft_thought_only": {
+    "file_name": "gsm_hard_codeact_sft_thought_only.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages"
+    }
+  },
   "alpaca_en_demo": {
     "file_name": "alpaca_en_demo.json"
   },
