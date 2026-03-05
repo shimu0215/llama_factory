@@ -27,6 +27,39 @@ mkdir -p "$TRITON_CACHE_DIR" hpc-results
 cd /scratch/wzhao20/llama_factory
 conda activate /scratch/wzhao20/conda_envs/llama-factory311-clean
 
+TARGET_DATA="/scratch/wzhao20/llama_factory/data/gsm_hard_codeact_sft_thought_only.jsonl"
+if [ ! -s "$TARGET_DATA" ]; then
+  echo "Preprocessed dataset not found at $TARGET_DATA, running preprocessing..."
+  CANDIDATE_DIRS=(
+    "/scratch/wzhao20/llama_factory/outputs/qwen3_14b_gsm_hard_smolagents_codeact"
+    "/scratch/wzhao20/llama_factory/outputs/qwen3_14b_gsm_hard_smolagents_codeact_dev_50q"
+    "/scratch/wzhao20/llama_factory/outputs/qwen3_14b_gsm_hard_smolagents_codeact_preview_5q"
+    "/scratch/wzhao20/llama_factory/outputs/qwen3_32b_gsm_hard_smolagents_codeact"
+  )
+  INPUT_DIR=""
+  for d in "${CANDIDATE_DIRS[@]}"; do
+    if ls "$d"/gsm_hard_codeact_records*.jsonl >/dev/null 2>&1; then
+      INPUT_DIR="$d"
+      break
+    fi
+  done
+
+  if [ -z "$INPUT_DIR" ]; then
+    echo "No raw codeact records found in candidate output dirs."
+    exit 1
+  fi
+
+  echo "Using raw records from: $INPUT_DIR"
+  python scripts/convert_codeact_to_thought_only_sft.py \
+    --input-dir "$INPUT_DIR" \
+    --output "$TARGET_DATA" \
+    --strict \
+    --keep-think-tags
+  echo "Preprocessing finished: $TARGET_DATA"
+else
+  echo "Found preprocessed dataset: $TARGET_DATA"
+fi
+
 unset RANK WORLD_SIZE LOCAL_RANK NODE_RANK MASTER_ADDR MASTER_PORT
 
 export MASTER_ADDR=127.0.0.1
