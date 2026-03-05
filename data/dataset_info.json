@@ -17,6 +17,21 @@
       "system_tag": "system"
     }
   },
+  "gsm_hard_codeact_sft_thought_only_full": {
+    "file_name": "gsm_hard_codeact_sft_thought_only_full.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant",
+      "observation_tag": "observation",
+      "system_tag": "system"
+    }
+  },
   "alpaca_en_demo": {
     "file_name": "alpaca_en_demo.json"
   },
