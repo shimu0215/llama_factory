@@ -71,24 +71,57 @@ def build_messages(record: dict[str, Any], keep_think_tags: bool, include_final_
         {"role": "system", "content": system_prompt.strip()},
         {"role": "user", "content": clean_text(record.get("question", ""), keep_think_tags=True)},
     ]
+    assistant_chunks: list[str] = []
+    pending_code = ""
+
+    def flush_assistant():
+        if assistant_chunks:
+            text = "\n\n".join([c for c in assistant_chunks if c]).strip()
+            if text:
+                messages.append({"role": "assistant", "content": text})
+            assistant_chunks.clear()
+
     for step in record.get("trajectory", []):
         st = step.get("step_type")
         if st == "reasoning":
             thought = clean_text(step.get("content", ""), keep_think_tags=keep_think_tags)
             if thought:
-                messages.append({"role": "assistant", "content": f"Thought:\n{thought}"})
+                assistant_chunks.append(f"Thought:\n{thought}")
         elif st == "tool_call":
             code = clean_text(step.get("code", ""), keep_think_tags=True)
             if code:
-                messages.append({"role": "user", "content": f"Code:\n```python\n{code}\n```"})
+                pending_code = code
         elif st == "tool_result":
             obs = clean_text(step.get("content", ""), keep_think_tags=True)
+            flush_assistant()
+            obs_parts: list[str] = []
+            if pending_code:
+                obs_parts.append(f"Code:\n```python\n{pending_code}\n```")
             if obs:
-                messages.append({"role": "user", "content": f"Execution/Observation:\n{obs}"})
-        elif st == "final_answer" and include_final_as_context:
-            fa = clean_text(step.get("content", ""), keep_think_tags=True)
+                obs_parts.append(f"Execution/Observation:\n{obs}")
+            if obs_parts:
+                # Observation turn is context-only and keeps user/assistant alternation valid.
+                messages.append({"role": "observation", "content": "\n\n".join(obs_parts)})
+            pending_code = ""
+        elif st == "final_answer":
+            fa = clean_text(step.get("content", ""), keep_think_tags=keep_think_tags)
             if fa:
-                messages.append({"role": "user", "content": f"Reference final answer:\n{fa}"})
+                assistant_chunks.append(fa)
+            elif include_final_as_context:
+                fa_ctx = clean_text(step.get("content", ""), keep_think_tags=True)
+                if fa_ctx:
+                    assistant_chunks.append(f"Reference final answer:\n{fa_ctx}")
+
+    flush_assistant()
+
+    # Remove trailing observation so the final supervised turn is assistant.
+    while len(messages) > 2 and messages[-1]["role"] == "observation":
+        messages.pop()
+
+    # Ensure odd number of prompt turns + 1 response turn for SFT processor.
+    if len(messages) >= 3 and messages[-1]["role"] != "assistant":
+        messages.append({"role": "assistant", "content": "Thought:\n(omitted)"})
+
     return messages
 
 

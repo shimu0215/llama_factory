@@ -28,7 +28,7 @@ cd /scratch/wzhao20/llama_factory
 conda activate /scratch/wzhao20/conda_envs/llama-factory311-clean
 
 TARGET_DATA="/scratch/wzhao20/llama_factory/data/gsm_hard_codeact_sft_thought_only.jsonl"
-if [ ! -s "$TARGET_DATA" ]; then
+if [ ! -s "$TARGET_DATA" ] || ! grep -q '"role": "observation"' "$TARGET_DATA"; then
   echo "Preprocessed dataset not found at $TARGET_DATA, running preprocessing..."
   CANDIDATE_DIRS=(
     "/scratch/wzhao20/llama_factory/outputs/qwen3_14b_gsm_hard_smolagents_codeact"
