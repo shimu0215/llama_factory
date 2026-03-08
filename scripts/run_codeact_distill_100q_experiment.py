@@ -40,12 +40,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--prompt-budget-tokens", type=int, default=12000)
+    parser.add_argument("--prompt-budget-tokens", type=int, default=16384)
     parser.add_argument("--recent-steps", type=int, default=2)
+    parser.add_argument("--vllm-maxlen", type=int, default=24576)
     parser.add_argument("--student-epochs", type=float, default=1.0)
     parser.add_argument("--student-save-steps", type=int, default=50)
     parser.add_argument("--student-grad-acc", type=int, default=16)
     parser.add_argument("--student-lr", type=float, default=1e-4)
+    parser.add_argument("--api-ready-timeout", type=int, default=900)
     return parser.parse_args()
 
 
@@ -60,10 +62,25 @@ def pick_free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def wait_api_ready(port: int, timeout_sec: int = 240) -> None:
+def _tail_log(path: Path, max_lines: int = 80) -> str:
+    if not path.exists():
+        return "(api log file not found)"
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return "\n".join(lines[-max_lines:])
+
+
+def wait_api_ready(proc: subprocess.Popen[Any], port: int, log_path: Path, timeout_sec: int = 900) -> None:
     url = f"http://127.0.0.1:{port}/v1/models"
     start = time.time()
     while time.time() - start < timeout_sec:
+        ret = proc.poll()
+        if ret is not None:
+            tail = _tail_log(log_path)
+            raise RuntimeError(
+                f"API process exited early with code {ret}.\n"
+                f"log: {log_path}\n"
+                f"--- log tail ---\n{tail}"
+            )
         try:
             resp = requests.get(url, timeout=2)
             if resp.status_code == 200:
@@ -71,13 +88,20 @@ def wait_api_ready(port: int, timeout_sec: int = 240) -> None:
         except Exception:
             pass
         time.sleep(2)
-    raise RuntimeError(f"API not ready on port {port}")
+    tail = _tail_log(log_path)
+    raise RuntimeError(
+        f"API not ready on port {port} within {timeout_sec}s.\n"
+        f"log: {log_path}\n"
+        f"--- log tail ---\n{tail}"
+    )
 
 
 def start_api(
     infer_yaml: str,
     model_name_or_path: str,
     log_path: Path,
+    api_ready_timeout: int,
+    vllm_maxlen: int,
     adapter_name_or_path: str | None = None,
 ) -> tuple[subprocess.Popen[Any], int]:
     port = pick_free_port()
@@ -90,12 +114,13 @@ def start_api(
         f"model_name_or_path={model_name_or_path}",
         "infer_backend=vllm",
         "vllm_enforce_eager=true",
+        f"vllm_maxlen={vllm_maxlen}",
     ]
     if adapter_name_or_path:
         cmd.append(f"adapter_name_or_path={adapter_name_or_path}")
     log_f = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env, stdout=log_f, stderr=subprocess.STDOUT)
-    wait_api_ready(port)
+    wait_api_ready(proc, port, log_path, timeout_sec=api_ready_timeout)
     return proc, port
 
 
@@ -140,11 +165,20 @@ def run_eval(
     max_tokens: int,
     prompt_budget_tokens: int,
     recent_steps: int,
+    api_ready_timeout: int,
+    vllm_maxlen: int,
     adapter_name_or_path: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     api_log = output_dir / f"{name}_api.log"
-    proc, port = start_api(infer_yaml, model_name_or_path, api_log, adapter_name_or_path)
+    proc, port = start_api(
+        infer_yaml,
+        model_name_or_path,
+        api_log,
+        api_ready_timeout,
+        vllm_maxlen,
+        adapter_name_or_path,
+    )
     try:
         cmd = [
             "python",
@@ -348,6 +382,8 @@ def main() -> None:
         max_tokens=args.max_tokens,
         prompt_budget_tokens=args.prompt_budget_tokens,
         recent_steps=args.recent_steps,
+        api_ready_timeout=args.api_ready_timeout,
+        vllm_maxlen=args.vllm_maxlen,
     )
     ft14_eval = run_eval(
         name="ft14",
@@ -361,6 +397,8 @@ def main() -> None:
         max_tokens=args.max_tokens,
         prompt_budget_tokens=args.prompt_budget_tokens,
         recent_steps=args.recent_steps,
+        api_ready_timeout=args.api_ready_timeout,
+        vllm_maxlen=args.vllm_maxlen,
     )
     base7_eval = run_eval(
         name="base7",
@@ -374,6 +412,8 @@ def main() -> None:
         max_tokens=args.max_tokens,
         prompt_budget_tokens=args.prompt_budget_tokens,
         recent_steps=args.recent_steps,
+        api_ready_timeout=args.api_ready_timeout,
+        vllm_maxlen=args.vllm_maxlen,
     )
 
     both_correct_qids: list[int] = []
@@ -456,6 +496,8 @@ def main() -> None:
         max_tokens=args.max_tokens,
         prompt_budget_tokens=args.prompt_budget_tokens,
         recent_steps=args.recent_steps,
+        api_ready_timeout=args.api_ready_timeout,
+        vllm_maxlen=args.vllm_maxlen,
         adapter_name_or_path=str(base14_student_out),
     )
     student_from_ft14_eval = run_eval(
@@ -470,6 +512,8 @@ def main() -> None:
         max_tokens=args.max_tokens,
         prompt_budget_tokens=args.prompt_budget_tokens,
         recent_steps=args.recent_steps,
+        api_ready_timeout=args.api_ready_timeout,
+        vllm_maxlen=args.vllm_maxlen,
         adapter_name_or_path=str(ft14_student_out),
     )
 

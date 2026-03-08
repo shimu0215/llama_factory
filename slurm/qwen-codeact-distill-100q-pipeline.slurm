@@ -41,9 +41,12 @@ python scripts/run_codeact_distill_100q_experiment.py \
   --work-dir "$WORK_DIR" \
   --sample-size 100 \
   --seed 42 \
+  --prompt-budget-tokens 16384 \
+  --vllm-maxlen 24576 \
   --max-steps 5 \
   --max-tokens 1024 \
   --temperature 0.7 \
+  --api-ready-timeout 1200 \
   --student-epochs 1.0 \
   --student-save-steps 50 \
   --student-grad-acc 32 \
