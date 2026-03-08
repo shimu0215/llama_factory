@@ -56,6 +56,27 @@ def run_cmd(cmd: list[str], cwd: Path) -> None:
     subprocess.run(cmd, cwd=str(cwd), check=True)
 
 
+def resolve_model_path(path_str: str) -> str:
+    path = Path(path_str).expanduser().resolve()
+    if path.is_dir() and (path / "config.json").exists():
+        return str(path)
+
+    if path.is_dir():
+        checkpoint_dirs = sorted(
+            [p for p in path.glob("checkpoint-*") if p.is_dir() and (p / "config.json").exists()],
+            key=lambda p: int(p.name.split("-")[-1]) if p.name.split("-")[-1].isdigit() else -1,
+        )
+        if checkpoint_dirs:
+            picked = checkpoint_dirs[-1]
+            print(f"[INFO] Using latest checkpoint as model path: {picked}")
+            return str(picked)
+
+    raise RuntimeError(
+        f"Invalid model path: {path}. Expect a directory with config.json, "
+        "or a parent directory containing checkpoint-*/config.json."
+    )
+
+
 def pick_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -360,6 +381,7 @@ def main() -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     source_map = load_records_from_parts(Path(args.source_records_dir).expanduser().resolve())
+    finetuned_qwen14_path = resolve_model_path(args.finetuned_qwen14_path)
     all_qids = sorted(source_map.keys())
     if len(all_qids) < args.sample_size:
         raise RuntimeError(f"Only {len(all_qids)} unique questions found, < sample-size {args.sample_size}.")
@@ -387,7 +409,7 @@ def main() -> None:
     )
     ft14_eval = run_eval(
         name="ft14",
-        model_name_or_path=args.finetuned_qwen14_path,
+        model_name_or_path=finetuned_qwen14_path,
         infer_yaml=args.qwen14_infer_yaml,
         question_ids_file=question_ids_file,
         output_dir=eval_root / "ft14_triple",
@@ -474,7 +496,7 @@ def main() -> None:
         dataset_dir=distill_dir,
         output_dir=ft14_student_out,
         base_qwen7_model=args.base_qwen7_model,
-        teacher_ref_model=args.finetuned_qwen14_path,
+        teacher_ref_model=finetuned_qwen14_path,
         epochs=args.student_epochs,
         save_steps=args.student_save_steps,
         grad_acc=args.student_grad_acc,
