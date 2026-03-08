@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-shard-size", type=int, default=0)
     parser.add_argument("--context-shard-size", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/qwen3_4b_gsm_hard_smolagents_codeact")
+    parser.add_argument("--question-ids-file", default=None, help="JSON file containing selected question ids.")
     return parser.parse_args()
 
 
@@ -511,7 +512,15 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     cleanup_previous_outputs(output_dir)
 
-    split, examples = load_gsm_hard_examples(args.dataset_name, args.dataset_config, args.split, args.limit)
+    split, raw_examples = load_gsm_hard_examples(args.dataset_name, args.dataset_config, args.split, 0)
+    indexed_examples = list(enumerate(raw_examples))
+    if args.question_ids_file:
+        with Path(args.question_ids_file).open("r", encoding="utf-8") as f:
+            selected_ids = set(json.load(f))
+        indexed_examples = [(idx, ex) for idx, ex in indexed_examples if idx in selected_ids]
+
+    if args.limit > 0:
+        indexed_examples = indexed_examples[: args.limit]
 
     records_writer = JsonlShardWriter(output_dir, "gsm_hard_codeact_records", args.record_shard_size)
     grouped_writer = JsonlShardWriter(output_dir, "gsm_hard_codeact_grouped", args.group_shard_size)
@@ -524,8 +533,8 @@ def main() -> None:
     extracted_count = 0
     question_accuracy_any = 0
 
-    progress = tqdm(examples, desc="gsm-hard questions", unit="q", dynamic_ncols=True)
-    for question_id, example in enumerate(progress):
+    progress = tqdm(indexed_examples, desc="gsm-hard questions", unit="q", dynamic_ncols=True)
+    for question_id, example in progress:
         paths = []
         for sample_id in range(args.num_samples):
             record = run_single_sample(
