@@ -49,12 +49,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student-grad-acc", type=int, default=16)
     parser.add_argument("--student-lr", type=float, default=1e-4)
     parser.add_argument("--api-ready-timeout", type=int, default=900)
+    parser.add_argument("--resume", action="store_true", help="Resume from saved stage checkpoints if available.")
     return parser.parse_args()
 
 
 def run_cmd(cmd: list[str], cwd: Path) -> None:
     print("[RUN]", " ".join(cmd))
     subprocess.run(cmd, cwd=str(cwd), check=True)
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def normalize_eval_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    grouped = payload.get("grouped", {})
+    if isinstance(grouped, dict):
+        payload["grouped"] = {int(k): v for k, v in grouped.items()}
+    return payload
 
 
 def resolve_model_path(path_str: str) -> str:
@@ -433,6 +450,8 @@ def main() -> None:
     args = parse_args()
     work_dir = Path(args.work_dir).expanduser().resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = work_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     source_map = load_records_from_parts(Path(args.source_records_dir).expanduser().resolve())
     finetuned_qwen14_path = resolve_model_path(args.finetuned_qwen14_path)
@@ -440,60 +459,84 @@ def main() -> None:
     if len(all_qids) < args.sample_size:
         raise RuntimeError(f"Only {len(all_qids)} unique questions found, < sample-size {args.sample_size}.")
 
-    rng = random.Random(args.seed)
-    sampled_qids = sorted(rng.sample(all_qids, args.sample_size))
     question_ids_file = work_dir / "sampled_question_ids.json"
-    question_ids_file.write_text(json.dumps(sampled_qids, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.resume and question_ids_file.exists():
+        sampled_qids = json.loads(question_ids_file.read_text(encoding="utf-8"))
+        print(f"[RESUME] Reusing sampled question ids from {question_ids_file}")
+    else:
+        rng = random.Random(args.seed)
+        sampled_qids = sorted(rng.sample(all_qids, args.sample_size))
+        question_ids_file.write_text(json.dumps(sampled_qids, ensure_ascii=False, indent=2), encoding="utf-8")
 
     eval_root = work_dir / "evals"
-    base14_eval = run_eval(
-        name="base14",
-        model_name_or_path=args.base_qwen14_model,
-        infer_yaml=args.qwen14_infer_yaml,
-        question_ids_file=question_ids_file,
-        output_dir=eval_root / "base14_single",
-        num_samples=1,
-        temperature=args.temperature,
-        max_steps=args.max_steps,
-        max_tokens=args.max_tokens,
-        prompt_budget_tokens=args.prompt_budget_tokens,
-        recent_steps=args.recent_steps,
-        api_ready_timeout=args.api_ready_timeout,
-        vllm_maxlen=args.vllm_maxlen,
-        vllm_gpu_util=args.vllm_gpu_util,
-    )
-    ft14_eval = run_eval(
-        name="ft14",
-        model_name_or_path=finetuned_qwen14_path,
-        infer_yaml=args.qwen14_infer_yaml,
-        question_ids_file=question_ids_file,
-        output_dir=eval_root / "ft14_triple",
-        num_samples=3,
-        temperature=args.temperature,
-        max_steps=args.max_steps,
-        max_tokens=args.max_tokens,
-        prompt_budget_tokens=args.prompt_budget_tokens,
-        recent_steps=args.recent_steps,
-        api_ready_timeout=args.api_ready_timeout,
-        vllm_maxlen=args.vllm_maxlen,
-        vllm_gpu_util=args.vllm_gpu_util,
-    )
-    base7_eval = run_eval(
-        name="base7",
-        model_name_or_path=args.base_qwen7_model,
-        infer_yaml=args.qwen7_infer_yaml,
-        question_ids_file=question_ids_file,
-        output_dir=eval_root / "base7_single",
-        num_samples=1,
-        temperature=args.temperature,
-        max_steps=args.max_steps,
-        max_tokens=args.max_tokens,
-        prompt_budget_tokens=args.prompt_budget_tokens,
-        recent_steps=args.recent_steps,
-        api_ready_timeout=args.api_ready_timeout,
-        vllm_maxlen=args.vllm_maxlen,
-        vllm_gpu_util=args.vllm_gpu_util,
-    )
+    base14_ckpt = ckpt_dir / "base14_eval.json"
+    ft14_ckpt = ckpt_dir / "ft14_eval.json"
+    base7_ckpt = ckpt_dir / "base7_eval.json"
+    if args.resume and base14_ckpt.exists():
+        print(f"[RESUME] Skip base14 eval, load {base14_ckpt}")
+        base14_eval = normalize_eval_payload(load_json(base14_ckpt))
+    else:
+        base14_eval = run_eval(
+            name="base14",
+            model_name_or_path=args.base_qwen14_model,
+            infer_yaml=args.qwen14_infer_yaml,
+            question_ids_file=question_ids_file,
+            output_dir=eval_root / "base14_single",
+            num_samples=1,
+            temperature=args.temperature,
+            max_steps=args.max_steps,
+            max_tokens=args.max_tokens,
+            prompt_budget_tokens=args.prompt_budget_tokens,
+            recent_steps=args.recent_steps,
+            api_ready_timeout=args.api_ready_timeout,
+            vllm_maxlen=args.vllm_maxlen,
+            vllm_gpu_util=args.vllm_gpu_util,
+        )
+        save_json(base14_ckpt, base14_eval)
+
+    if args.resume and ft14_ckpt.exists():
+        print(f"[RESUME] Skip ft14 eval, load {ft14_ckpt}")
+        ft14_eval = normalize_eval_payload(load_json(ft14_ckpt))
+    else:
+        ft14_eval = run_eval(
+            name="ft14",
+            model_name_or_path=finetuned_qwen14_path,
+            infer_yaml=args.qwen14_infer_yaml,
+            question_ids_file=question_ids_file,
+            output_dir=eval_root / "ft14_triple",
+            num_samples=3,
+            temperature=args.temperature,
+            max_steps=args.max_steps,
+            max_tokens=args.max_tokens,
+            prompt_budget_tokens=args.prompt_budget_tokens,
+            recent_steps=args.recent_steps,
+            api_ready_timeout=args.api_ready_timeout,
+            vllm_maxlen=args.vllm_maxlen,
+            vllm_gpu_util=args.vllm_gpu_util,
+        )
+        save_json(ft14_ckpt, ft14_eval)
+
+    if args.resume and base7_ckpt.exists():
+        print(f"[RESUME] Skip base7 eval, load {base7_ckpt}")
+        base7_eval = normalize_eval_payload(load_json(base7_ckpt))
+    else:
+        base7_eval = run_eval(
+            name="base7",
+            model_name_or_path=args.base_qwen7_model,
+            infer_yaml=args.qwen7_infer_yaml,
+            question_ids_file=question_ids_file,
+            output_dir=eval_root / "base7_single",
+            num_samples=1,
+            temperature=args.temperature,
+            max_steps=args.max_steps,
+            max_tokens=args.max_tokens,
+            prompt_budget_tokens=args.prompt_budget_tokens,
+            recent_steps=args.recent_steps,
+            api_ready_timeout=args.api_ready_timeout,
+            vllm_maxlen=args.vllm_maxlen,
+            vllm_gpu_util=args.vllm_gpu_util,
+        )
+        save_json(base7_ckpt, base7_eval)
 
     both_correct_qids: list[int] = []
     for qid in sampled_qids:
@@ -560,43 +603,66 @@ def main() -> None:
         lr=args.student_lr,
     )
 
-    run_cmd(["llamafactory-cli", "train", str(base14_yaml)], cwd=ROOT)
-    run_cmd(["llamafactory-cli", "train", str(ft14_yaml)], cwd=ROOT)
+    base14_train_ckpt = ckpt_dir / "student_from_base14_train_done.json"
+    ft14_train_ckpt = ckpt_dir / "student_from_ft14_train_done.json"
+    if args.resume and base14_train_ckpt.exists():
+        print(f"[RESUME] Skip student_from_base14 train, load marker {base14_train_ckpt}")
+    else:
+        run_cmd(["llamafactory-cli", "train", str(base14_yaml)], cwd=ROOT)
+        save_json(base14_train_ckpt, {"done": True, "output_dir": str(base14_student_out)})
+    if args.resume and ft14_train_ckpt.exists():
+        print(f"[RESUME] Skip student_from_ft14 train, load marker {ft14_train_ckpt}")
+    else:
+        run_cmd(["llamafactory-cli", "train", str(ft14_yaml)], cwd=ROOT)
+        save_json(ft14_train_ckpt, {"done": True, "output_dir": str(ft14_student_out)})
 
-    student_from_base14_eval = run_eval(
-        name="student_from_base14",
-        model_name_or_path=args.base_qwen7_model,
-        infer_yaml=args.qwen7_infer_yaml,
-        question_ids_file=question_ids_file,
-        output_dir=eval_root / "student_from_base14_single",
-        num_samples=1,
-        temperature=args.temperature,
-        max_steps=args.max_steps,
-        max_tokens=args.max_tokens,
-        prompt_budget_tokens=args.prompt_budget_tokens,
-        recent_steps=args.recent_steps,
-        api_ready_timeout=args.api_ready_timeout,
-        vllm_maxlen=args.vllm_maxlen,
-        vllm_gpu_util=args.vllm_gpu_util,
-        adapter_name_or_path=str(base14_student_out),
-    )
-    student_from_ft14_eval = run_eval(
-        name="student_from_ft14",
-        model_name_or_path=args.base_qwen7_model,
-        infer_yaml=args.qwen7_infer_yaml,
-        question_ids_file=question_ids_file,
-        output_dir=eval_root / "student_from_ft14_single",
-        num_samples=1,
-        temperature=args.temperature,
-        max_steps=args.max_steps,
-        max_tokens=args.max_tokens,
-        prompt_budget_tokens=args.prompt_budget_tokens,
-        recent_steps=args.recent_steps,
-        api_ready_timeout=args.api_ready_timeout,
-        vllm_maxlen=args.vllm_maxlen,
-        vllm_gpu_util=args.vllm_gpu_util,
-        adapter_name_or_path=str(ft14_student_out),
-    )
+    student_base14_eval_ckpt = ckpt_dir / "student_from_base14_eval.json"
+    student_ft14_eval_ckpt = ckpt_dir / "student_from_ft14_eval.json"
+    if args.resume and student_base14_eval_ckpt.exists():
+        print(f"[RESUME] Skip student_from_base14 eval, load {student_base14_eval_ckpt}")
+        student_from_base14_eval = normalize_eval_payload(load_json(student_base14_eval_ckpt))
+    else:
+        student_from_base14_eval = run_eval(
+            name="student_from_base14",
+            model_name_or_path=args.base_qwen7_model,
+            infer_yaml=args.qwen7_infer_yaml,
+            question_ids_file=question_ids_file,
+            output_dir=eval_root / "student_from_base14_single",
+            num_samples=1,
+            temperature=args.temperature,
+            max_steps=args.max_steps,
+            max_tokens=args.max_tokens,
+            prompt_budget_tokens=args.prompt_budget_tokens,
+            recent_steps=args.recent_steps,
+            api_ready_timeout=args.api_ready_timeout,
+            vllm_maxlen=args.vllm_maxlen,
+            vllm_gpu_util=args.vllm_gpu_util,
+            adapter_name_or_path=str(base14_student_out),
+        )
+        save_json(student_base14_eval_ckpt, student_from_base14_eval)
+
+    if args.resume and student_ft14_eval_ckpt.exists():
+        print(f"[RESUME] Skip student_from_ft14 eval, load {student_ft14_eval_ckpt}")
+        student_from_ft14_eval = normalize_eval_payload(load_json(student_ft14_eval_ckpt))
+    else:
+        student_from_ft14_eval = run_eval(
+            name="student_from_ft14",
+            model_name_or_path=args.base_qwen7_model,
+            infer_yaml=args.qwen7_infer_yaml,
+            question_ids_file=question_ids_file,
+            output_dir=eval_root / "student_from_ft14_single",
+            num_samples=1,
+            temperature=args.temperature,
+            max_steps=args.max_steps,
+            max_tokens=args.max_tokens,
+            prompt_budget_tokens=args.prompt_budget_tokens,
+            recent_steps=args.recent_steps,
+            api_ready_timeout=args.api_ready_timeout,
+            vllm_maxlen=args.vllm_maxlen,
+            vllm_gpu_util=args.vllm_gpu_util,
+            adapter_name_or_path=str(ft14_student_out),
+        )
+        save_json(student_ft14_eval_ckpt, student_from_ft14_eval)
 
     result = {
         "sampled_question_count": len(sampled_qids),
