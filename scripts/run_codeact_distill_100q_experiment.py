@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recent-steps", type=int, default=2)
     parser.add_argument("--vllm-maxlen", type=int, default=24576)
     parser.add_argument("--vllm-gpu-util", type=float, default=0.25)
+    parser.add_argument("--vllm-tensor-parallel-size", type=int, default=2)
     parser.add_argument("--student-epochs", type=float, default=1.0)
     parser.add_argument("--student-save-steps", type=int, default=50)
     parser.add_argument("--student-grad-acc", type=int, default=16)
@@ -125,6 +126,7 @@ def start_api(
     api_ready_timeout: int,
     vllm_maxlen: int,
     vllm_gpu_util: float,
+    vllm_tensor_parallel_size: int,
     adapter_name_or_path: str | None = None,
 ) -> tuple[subprocess.Popen[Any], int]:
     port = pick_free_port()
@@ -139,6 +141,7 @@ def start_api(
         "vllm_enforce_eager=true",
         f"vllm_maxlen={vllm_maxlen}",
         f"vllm_gpu_util={vllm_gpu_util}",
+        f"vllm_tensor_parallel_size={vllm_tensor_parallel_size}",
     ]
     if adapter_name_or_path:
         cmd.append(f"adapter_name_or_path={adapter_name_or_path}")
@@ -154,6 +157,8 @@ def stop_api(proc: subprocess.Popen[Any]) -> None:
         proc.wait(timeout=20)
     except subprocess.TimeoutExpired:
         proc.kill()
+    # Leave some time for CUDA context cleanup before next API launch.
+    time.sleep(8)
 
 
 def load_records_from_parts(source_dir: Path) -> dict[int, dict[str, Any]]:
@@ -192,18 +197,23 @@ def run_eval(
     api_ready_timeout: int,
     vllm_maxlen: int,
     vllm_gpu_util: float,
+    vllm_tensor_parallel_size: int,
     adapter_name_or_path: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     api_log = output_dir / f"{name}_api.log"
     launch_attempts = [
         (vllm_maxlen, vllm_gpu_util),
-        (min(vllm_maxlen, 16384), min(vllm_gpu_util, 0.22)),
-        (12288, min(vllm_gpu_util, 0.18)),
+        (min(vllm_maxlen, 16384), 0.92),
+        (12288, 0.90),
+        (8192, 0.85),
+        (8192, 0.60),
     ]
     launch_error: Exception | None = None
     proc = None
     port = None
+    added_high_util_fallback = False
+    added_low_util_fallback = False
     for attempt_idx, (attempt_maxlen, attempt_mem_util) in enumerate(launch_attempts, start=1):
         try:
             print(
@@ -217,12 +227,33 @@ def run_eval(
                 api_ready_timeout,
                 attempt_maxlen,
                 attempt_mem_util,
+                vllm_tensor_parallel_size,
                 adapter_name_or_path,
             )
             break
         except Exception as e:  # noqa: BLE001
             launch_error = e
             print(f"[WARN] API launch attempt {attempt_idx} failed: {e}")
+            # Early adjust direction according to failure mode.
+            msg = str(e)
+            if "No available memory for the cache blocks" in msg and not added_high_util_fallback:
+                # Need larger KV budget: prioritize higher util and shorter context.
+                launch_attempts.extend(
+                    [
+                        (min(attempt_maxlen, 12288), 0.94),
+                        (8192, 0.92),
+                    ]
+                )
+                added_high_util_fallback = True
+            elif "less than desired GPU memory utilization" in msg and not added_low_util_fallback:
+                # Need lower reservation because device is already occupied.
+                launch_attempts.extend(
+                    [
+                        (min(attempt_maxlen, 12288), 0.50),
+                        (8192, 0.40),
+                    ]
+                )
+                added_low_util_fallback = True
             time.sleep(3)
 
     if proc is None or port is None:
@@ -435,6 +466,7 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
+        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
     )
     ft14_eval = run_eval(
         name="ft14",
@@ -451,6 +483,7 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
+        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
     )
     base7_eval = run_eval(
         name="base7",
@@ -467,6 +500,7 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
+        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
     )
 
     both_correct_qids: list[int] = []
@@ -552,6 +586,7 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
+        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
         adapter_name_or_path=str(base14_student_out),
     )
     student_from_ft14_eval = run_eval(
@@ -569,6 +604,7 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
+        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
         adapter_name_or_path=str(ft14_student_out),
     )
 

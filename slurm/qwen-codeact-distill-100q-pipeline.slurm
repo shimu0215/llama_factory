@@ -3,7 +3,7 @@
 #SBATCH --qos=gpu
 #SBATCH --partition=contrib-gpuq
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:A100.80gb:1
+#SBATCH --gres=gpu:A100.80gb:2
 #SBATCH --output=hpc-results/lf-codeact-distill-100q-%j.out
 #SBATCH --error=hpc-results/lf-codeact-distill-100q-%j.err
 #SBATCH --ntasks=1
@@ -44,6 +44,7 @@ python scripts/run_codeact_distill_100q_experiment.py \
   --prompt-budget-tokens 16384 \
   --vllm-maxlen 24576 \
   --vllm-gpu-util 0.25 \
+  --vllm-tensor-parallel-size 2 \
   --max-steps 5 \
   --max-tokens 1024 \
   --temperature 0.7 \
