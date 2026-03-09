@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-budget-tokens", type=int, default=16384)
     parser.add_argument("--recent-steps", type=int, default=2)
     parser.add_argument("--vllm-maxlen", type=int, default=24576)
+    parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.25)
     parser.add_argument("--student-epochs", type=float, default=1.0)
     parser.add_argument("--student-save-steps", type=int, default=50)
     parser.add_argument("--student-grad-acc", type=int, default=16)
@@ -123,6 +124,7 @@ def start_api(
     log_path: Path,
     api_ready_timeout: int,
     vllm_maxlen: int,
+    vllm_gpu_memory_utilization: float,
     adapter_name_or_path: str | None = None,
 ) -> tuple[subprocess.Popen[Any], int]:
     port = pick_free_port()
@@ -136,6 +138,7 @@ def start_api(
         "infer_backend=vllm",
         "vllm_enforce_eager=true",
         f"vllm_maxlen={vllm_maxlen}",
+        f"vllm_gpu_memory_utilization={vllm_gpu_memory_utilization}",
     ]
     if adapter_name_or_path:
         cmd.append(f"adapter_name_or_path={adapter_name_or_path}")
@@ -188,18 +191,43 @@ def run_eval(
     recent_steps: int,
     api_ready_timeout: int,
     vllm_maxlen: int,
+    vllm_gpu_memory_utilization: float,
     adapter_name_or_path: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     api_log = output_dir / f"{name}_api.log"
-    proc, port = start_api(
-        infer_yaml,
-        model_name_or_path,
-        api_log,
-        api_ready_timeout,
-        vllm_maxlen,
-        adapter_name_or_path,
-    )
+    launch_attempts = [
+        (vllm_maxlen, vllm_gpu_memory_utilization),
+        (min(vllm_maxlen, 16384), min(vllm_gpu_memory_utilization, 0.22)),
+        (12288, min(vllm_gpu_memory_utilization, 0.18)),
+    ]
+    launch_error: Exception | None = None
+    proc = None
+    port = None
+    for attempt_idx, (attempt_maxlen, attempt_mem_util) in enumerate(launch_attempts, start=1):
+        try:
+            print(
+                f"[INFO] Launch API attempt {attempt_idx}: "
+                f"vllm_maxlen={attempt_maxlen}, vllm_gpu_memory_utilization={attempt_mem_util}"
+            )
+            proc, port = start_api(
+                infer_yaml,
+                model_name_or_path,
+                api_log,
+                api_ready_timeout,
+                attempt_maxlen,
+                attempt_mem_util,
+                adapter_name_or_path,
+            )
+            break
+        except Exception as e:  # noqa: BLE001
+            launch_error = e
+            print(f"[WARN] API launch attempt {attempt_idx} failed: {e}")
+            time.sleep(3)
+
+    if proc is None or port is None:
+        assert launch_error is not None
+        raise launch_error
     try:
         cmd = [
             "python",
@@ -406,6 +434,7 @@ def main() -> None:
         recent_steps=args.recent_steps,
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
     )
     ft14_eval = run_eval(
         name="ft14",
@@ -421,6 +450,7 @@ def main() -> None:
         recent_steps=args.recent_steps,
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
     )
     base7_eval = run_eval(
         name="base7",
@@ -436,6 +466,7 @@ def main() -> None:
         recent_steps=args.recent_steps,
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
     )
 
     both_correct_qids: list[int] = []
@@ -520,6 +551,7 @@ def main() -> None:
         recent_steps=args.recent_steps,
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
         adapter_name_or_path=str(base14_student_out),
     )
     student_from_ft14_eval = run_eval(
@@ -536,6 +568,7 @@ def main() -> None:
         recent_steps=args.recent_steps,
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
         adapter_name_or_path=str(ft14_student_out),
     )
 
