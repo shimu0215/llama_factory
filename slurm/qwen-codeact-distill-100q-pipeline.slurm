@@ -44,7 +44,6 @@ python scripts/run_codeact_distill_100q_experiment.py \
   --prompt-budget-tokens 16384 \
   --vllm-maxlen 24576 \
   --vllm-gpu-util 0.25 \
-  --vllm-tensor-parallel-size 2 \
   --max-steps 5 \
   --max-tokens 1024 \
   --temperature 0.7 \

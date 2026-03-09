@@ -44,7 +44,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recent-steps", type=int, default=2)
     parser.add_argument("--vllm-maxlen", type=int, default=24576)
     parser.add_argument("--vllm-gpu-util", type=float, default=0.25)
-    parser.add_argument("--vllm-tensor-parallel-size", type=int, default=2)
     parser.add_argument("--student-epochs", type=float, default=1.0)
     parser.add_argument("--student-save-steps", type=int, default=50)
     parser.add_argument("--student-grad-acc", type=int, default=16)
@@ -126,7 +125,6 @@ def start_api(
     api_ready_timeout: int,
     vllm_maxlen: int,
     vllm_gpu_util: float,
-    vllm_tensor_parallel_size: int,
     adapter_name_or_path: str | None = None,
 ) -> tuple[subprocess.Popen[Any], int]:
     port = pick_free_port()
@@ -141,7 +139,6 @@ def start_api(
         "vllm_enforce_eager=true",
         f"vllm_maxlen={vllm_maxlen}",
         f"vllm_gpu_util={vllm_gpu_util}",
-        f"vllm_tensor_parallel_size={vllm_tensor_parallel_size}",
     ]
     if adapter_name_or_path:
         cmd.append(f"adapter_name_or_path={adapter_name_or_path}")
@@ -197,7 +194,6 @@ def run_eval(
     api_ready_timeout: int,
     vllm_maxlen: int,
     vllm_gpu_util: float,
-    vllm_tensor_parallel_size: int,
     adapter_name_or_path: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -227,7 +223,6 @@ def run_eval(
                 api_ready_timeout,
                 attempt_maxlen,
                 attempt_mem_util,
-                vllm_tensor_parallel_size,
                 adapter_name_or_path,
             )
             break
@@ -466,7 +461,6 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
-        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
     )
     ft14_eval = run_eval(
         name="ft14",
@@ -483,7 +477,6 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
-        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
     )
     base7_eval = run_eval(
         name="base7",
@@ -500,7 +493,6 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
-        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
     )
 
     both_correct_qids: list[int] = []
@@ -586,7 +578,6 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
-        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
         adapter_name_or_path=str(base14_student_out),
     )
     student_from_ft14_eval = run_eval(
@@ -604,7 +595,6 @@ def main() -> None:
         api_ready_timeout=args.api_ready_timeout,
         vllm_maxlen=args.vllm_maxlen,
         vllm_gpu_util=args.vllm_gpu_util,
-        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
         adapter_name_or_path=str(ft14_student_out),
     )
 
