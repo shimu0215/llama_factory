@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -11,6 +12,15 @@ from tqdm import tqdm
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Some math/code trajectories can create huge integers/fractions that fail on str(...)
+# under Python's default int->str digit guard. Relax it for robust long-running eval.
+if hasattr(sys, "set_int_max_str_digits"):
+    try:
+        sys.set_int_max_str_digits(0)
+    except ValueError:
+        # Fallback for runtimes that disallow 0 (unlimited).
+        sys.set_int_max_str_digits(1_000_000)
 
 CODEACT_INSTRUCTIONS = """
 Solve the math problem with CodeAct style reasoning.
@@ -479,31 +489,53 @@ def run_single_sample(
         max_observation_chars=args.max_observation_chars,
         max_step_chars=args.max_step_chars,
     )
-    full_result = agent.run(question, return_full_result=True)
-    final_answer = str(full_result.output)
-    trajectory, cot_text = build_structured_trajectory(full_result.steps, full_result.output)
+    try:
+        full_result = agent.run(question, return_full_result=True)
+        final_answer = str(full_result.output)
+        trajectory, cot_text = build_structured_trajectory(full_result.steps, full_result.output)
 
-    extracted_prediction = extract_answer(final_answer)
-    extracted_ground_truth = extract_answer(answer)
-    correct = compare_answers(extracted_prediction, extracted_ground_truth)
+        extracted_prediction = extract_answer(final_answer)
+        extracted_ground_truth = extract_answer(answer)
+        correct = compare_answers(extracted_prediction, extracted_ground_truth)
 
-    return {
-        "question_id": question_id,
-        "sample_id": sample_id,
-        "question": question,
-        "ground_truth": answer,
-        "final_answer": final_answer,
-        "extracted_prediction": extracted_prediction,
-        "extracted_ground_truth": extracted_ground_truth,
-        "correct": correct,
-        "state": full_result.state,
-        "token_usage": full_result.token_usage.dict() if full_result.token_usage is not None else None,
-        "timing": full_result.timing.dict(),
-        "steps": full_result.steps,
-        "trajectory": trajectory,
-        "cot_text": cot_text,
-        "visible_contexts": agent.visible_contexts,
-    }
+        return {
+            "question_id": question_id,
+            "sample_id": sample_id,
+            "question": question,
+            "ground_truth": answer,
+            "final_answer": final_answer,
+            "extracted_prediction": extracted_prediction,
+            "extracted_ground_truth": extracted_ground_truth,
+            "correct": correct,
+            "state": full_result.state,
+            "token_usage": full_result.token_usage.dict() if full_result.token_usage is not None else None,
+            "timing": full_result.timing.dict(),
+            "steps": full_result.steps,
+            "trajectory": trajectory,
+            "cot_text": cot_text,
+            "visible_contexts": agent.visible_contexts,
+            "error": None,
+        }
+    except Exception as e:
+        error_text = f"{type(e).__name__}: {e}"
+        return {
+            "question_id": question_id,
+            "sample_id": sample_id,
+            "question": question,
+            "ground_truth": answer,
+            "final_answer": f"[ERROR] {error_text}",
+            "extracted_prediction": None,
+            "extracted_ground_truth": extract_answer(answer),
+            "correct": False,
+            "state": {},
+            "token_usage": None,
+            "timing": {},
+            "steps": [],
+            "trajectory": [{"step_type": "error", "content": error_text}],
+            "cot_text": f"Error:\n{error_text}",
+            "visible_contexts": agent.visible_contexts,
+            "error": error_text,
+        }
 
 
 def main() -> None:
