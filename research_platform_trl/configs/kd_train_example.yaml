@@ -1,0 +1,23 @@
+student:
+  model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+
+dataset:
+  # grouped jsonl: each line has question + paths[]
+  grouped_records_jsonl: /scratch/wzhao20/llama_factory/outputs/qwen3_14b_gsm_hard_smolagents_codeact/gsm_hard_codeact_grouped_part_000.jsonl
+  seed: 42
+
+prompt:
+  file: research_platform_trl/prompts/codeact_v1.yaml
+
+train:
+  max_length: 4096
+  learning_rate: 1e-4
+  epochs: 1.0
+  grad_acc: 16
+  per_device_batch_size: 1
+  save_steps: 50
+  bf16: true
+  # resume_from_checkpoint: /path/to/checkpoint
+
+output:
+  work_dir: outputs/research_platform_trl/kd_train_demo

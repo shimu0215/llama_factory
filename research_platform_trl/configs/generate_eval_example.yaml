@@ -1,0 +1,41 @@
+model:
+  backend: openai_compatible
+  model_id: test
+  api_base: http://127.0.0.1:8000/v1
+  api_key: "0"
+  temperature: 0.7
+  max_tokens: 1024
+
+dataset:
+  path: reasoning-machines/gsm-hard
+  config: default
+  split: test
+  limit: 50
+  # question_ids_file: /scratch/wzhao20/llama_factory/outputs/xxx/sample_qids.json
+
+tools:
+  enabled:
+    - python_exec
+
+generation:
+  num_samples: 3
+  max_steps: 5
+  temperature: 0.7
+  max_tokens: 1024
+
+context:
+  enable_context_compression: true
+  compression_mode: auto
+  # Used when compression_mode=auto and prompt_budget_tokens is not set.
+  model_max_context_tokens: 16384
+  # prompt_budget_tokens: 12000
+  recent_steps: 2
+  max_summary_chars: 1200
+  max_observation_chars: 1500
+  max_step_chars: 1200
+
+prompt:
+  file: research_platform_trl/prompts/codeact_v1.yaml
+
+output:
+  work_dir: outputs/research_platform_trl/generate_eval_demo
