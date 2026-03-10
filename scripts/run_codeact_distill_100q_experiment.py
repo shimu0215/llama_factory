@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import random
+import signal
 import socket
 import subprocess
 import time
@@ -48,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student-save-steps", type=int, default=50)
     parser.add_argument("--student-grad-acc", type=int, default=16)
     parser.add_argument("--student-lr", type=float, default=1e-4)
+    parser.add_argument("--student-use-asft", action="store_true", help="Enable ASFT loss for student training.")
     parser.add_argument("--api-ready-timeout", type=int, default=900)
     parser.add_argument("--resume", action="store_true", help="Resume from saved stage checkpoints if available.")
     return parser.parse_args()
@@ -170,17 +172,30 @@ def start_api(
     if adapter_name_or_path:
         cmd.append(f"adapter_name_or_path={adapter_name_or_path}")
     log_f = log_path.open("w", encoding="utf-8")
-    proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env, stdout=log_f, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ROOT),
+        env=env,
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        preexec_fn=os.setsid,
+    )
     wait_api_ready(proc, port, log_path, timeout_sec=api_ready_timeout)
     return proc, port
 
 
 def stop_api(proc: subprocess.Popen[Any]) -> None:
-    proc.terminate()
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:
+        proc.terminate()
     try:
         proc.wait(timeout=20)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            proc.kill()
     # Leave some time for CUDA context cleanup before next API launch.
     time.sleep(8)
 
@@ -406,16 +421,14 @@ def write_student_yaml(
     output_dir: Path,
     base_qwen7_model: str,
     teacher_ref_model: str,
+    use_asft: bool,
     epochs: float,
     save_steps: int,
     grad_acc: int,
     lr: float,
 ) -> None:
-    content = f"""### model
-model_name_or_path: {base_qwen7_model}
-trust_remote_code: true
-
-### method
+    if use_asft:
+        method_block = f"""### method
 stage: sft
 do_train: true
 finetuning_type: lora
@@ -424,6 +437,22 @@ lora_target: all
 use_asft_loss: true
 asft_alpha: 0.1
 ref_model: {teacher_ref_model}
+"""
+    else:
+        method_block = """### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 8
+lora_target: all
+use_asft_loss: false
+"""
+
+    content = f"""### model
+model_name_or_path: {base_qwen7_model}
+trust_remote_code: true
+
+{method_block}
 
 ### dataset
 dataset: {dataset_name}
@@ -596,6 +625,7 @@ def main() -> None:
         output_dir=base14_student_out,
         base_qwen7_model=args.base_qwen7_model,
         teacher_ref_model=args.base_qwen14_model,
+        use_asft=args.student_use_asft,
         epochs=args.student_epochs,
         save_steps=args.student_save_steps,
         grad_acc=args.student_grad_acc,
@@ -608,6 +638,7 @@ def main() -> None:
         output_dir=ft14_student_out,
         base_qwen7_model=args.base_qwen7_model,
         teacher_ref_model=finetuned_qwen14_path,
+        use_asft=args.student_use_asft,
         epochs=args.student_epochs,
         save_steps=args.student_save_steps,
         grad_acc=args.student_grad_acc,
