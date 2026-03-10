@@ -30,14 +30,17 @@ conda activate /scratch/wzhao20/conda_envs/llama-factory311-clean
 SOURCE_DIR="/scratch/wzhao20/llama_factory/outputs/qwen3_14b_gsm_hard_smolagents_codeact"
 WORK_DIR="/scratch/wzhao20/llama_factory/outputs/distill_100q_experiment_${SLURM_JOB_ID}"
 FT14_PATH="${FT14_PATH:-/scratch/wzhao20/llama_factory/saves/qwen3-14b/freeze/gsmhard_thought_only_entropy_sft_full}"
+STUDENT_MODEL="${STUDENT_MODEL:-Qwen/Qwen3-8B}"
 
 echo "SOURCE_DIR=$SOURCE_DIR"
 echo "WORK_DIR=$WORK_DIR"
 echo "FT14_PATH=$FT14_PATH"
+echo "STUDENT_MODEL=$STUDENT_MODEL"
 
 python scripts/run_codeact_distill_100q_experiment.py \
   --source-records-dir "$SOURCE_DIR" \
   --finetuned-qwen14-path "$FT14_PATH" \
+  --base-qwen7-model "$STUDENT_MODEL" \
   --work-dir "$WORK_DIR" \
   --sample-size 100 \
   --seed 42 \

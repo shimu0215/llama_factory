@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--base-qwen14-model", default="Qwen/Qwen3-14B")
-    parser.add_argument("--base-qwen7-model", default="Qwen/Qwen2.5-7B-Instruct")
+    parser.add_argument("--base-qwen7-model", default="Qwen/Qwen3-8B")
     parser.add_argument("--qwen14-infer-yaml", default="examples/inference/qwen3_14b_codeact.yaml")
     parser.add_argument("--qwen7-infer-yaml", default="examples/inference/qwen25_7b.yaml")
     parser.add_argument("--max-steps", type=int, default=5)
@@ -72,6 +72,16 @@ def normalize_eval_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(grouped, dict):
         payload["grouped"] = {int(k): v for k, v in grouped.items()}
     return payload
+
+
+def can_resume_eval(ckpt_path: Path, expected_model: str) -> bool:
+    if not ckpt_path.exists():
+        return False
+    try:
+        payload = load_json(ckpt_path)
+    except Exception:
+        return False
+    return payload.get("model_name_or_path") == expected_model
 
 
 def resolve_model_path(path_str: str) -> str:
@@ -330,6 +340,7 @@ def run_eval(
     total = len(grouped)
     return {
         "name": name,
+        "model_name_or_path": model_name_or_path,
         "output_dir": str(output_dir),
         "total_questions": total,
         "first_sample_accuracy": first_correct / total if total else 0.0,
@@ -472,7 +483,7 @@ def main() -> None:
     base14_ckpt = ckpt_dir / "base14_eval.json"
     ft14_ckpt = ckpt_dir / "ft14_eval.json"
     base7_ckpt = ckpt_dir / "base7_eval.json"
-    if args.resume and base14_ckpt.exists():
+    if args.resume and can_resume_eval(base14_ckpt, args.base_qwen14_model):
         print(f"[RESUME] Skip base14 eval, load {base14_ckpt}")
         base14_eval = normalize_eval_payload(load_json(base14_ckpt))
     else:
@@ -494,7 +505,7 @@ def main() -> None:
         )
         save_json(base14_ckpt, base14_eval)
 
-    if args.resume and ft14_ckpt.exists():
+    if args.resume and can_resume_eval(ft14_ckpt, finetuned_qwen14_path):
         print(f"[RESUME] Skip ft14 eval, load {ft14_ckpt}")
         ft14_eval = normalize_eval_payload(load_json(ft14_ckpt))
     else:
@@ -516,7 +527,7 @@ def main() -> None:
         )
         save_json(ft14_ckpt, ft14_eval)
 
-    if args.resume and base7_ckpt.exists():
+    if args.resume and can_resume_eval(base7_ckpt, args.base_qwen7_model):
         print(f"[RESUME] Skip base7 eval, load {base7_ckpt}")
         base7_eval = normalize_eval_payload(load_json(base7_ckpt))
     else:
@@ -606,19 +617,41 @@ def main() -> None:
     base14_train_ckpt = ckpt_dir / "student_from_base14_train_done.json"
     ft14_train_ckpt = ckpt_dir / "student_from_ft14_train_done.json"
     if args.resume and base14_train_ckpt.exists():
-        print(f"[RESUME] Skip student_from_base14 train, load marker {base14_train_ckpt}")
+        marker = load_json(base14_train_ckpt)
+        if marker.get("base_student_model") == args.base_qwen7_model:
+            print(f"[RESUME] Skip student_from_base14 train, load marker {base14_train_ckpt}")
+        else:
+            run_cmd(["llamafactory-cli", "train", str(base14_yaml)], cwd=ROOT)
+            save_json(
+                base14_train_ckpt,
+                {"done": True, "output_dir": str(base14_student_out), "base_student_model": args.base_qwen7_model},
+            )
     else:
         run_cmd(["llamafactory-cli", "train", str(base14_yaml)], cwd=ROOT)
-        save_json(base14_train_ckpt, {"done": True, "output_dir": str(base14_student_out)})
+        save_json(
+            base14_train_ckpt,
+            {"done": True, "output_dir": str(base14_student_out), "base_student_model": args.base_qwen7_model},
+        )
     if args.resume and ft14_train_ckpt.exists():
-        print(f"[RESUME] Skip student_from_ft14 train, load marker {ft14_train_ckpt}")
+        marker = load_json(ft14_train_ckpt)
+        if marker.get("base_student_model") == args.base_qwen7_model:
+            print(f"[RESUME] Skip student_from_ft14 train, load marker {ft14_train_ckpt}")
+        else:
+            run_cmd(["llamafactory-cli", "train", str(ft14_yaml)], cwd=ROOT)
+            save_json(
+                ft14_train_ckpt,
+                {"done": True, "output_dir": str(ft14_student_out), "base_student_model": args.base_qwen7_model},
+            )
     else:
         run_cmd(["llamafactory-cli", "train", str(ft14_yaml)], cwd=ROOT)
-        save_json(ft14_train_ckpt, {"done": True, "output_dir": str(ft14_student_out)})
+        save_json(
+            ft14_train_ckpt,
+            {"done": True, "output_dir": str(ft14_student_out), "base_student_model": args.base_qwen7_model},
+        )
 
     student_base14_eval_ckpt = ckpt_dir / "student_from_base14_eval.json"
     student_ft14_eval_ckpt = ckpt_dir / "student_from_ft14_eval.json"
-    if args.resume and student_base14_eval_ckpt.exists():
+    if args.resume and can_resume_eval(student_base14_eval_ckpt, args.base_qwen7_model):
         print(f"[RESUME] Skip student_from_base14 eval, load {student_base14_eval_ckpt}")
         student_from_base14_eval = normalize_eval_payload(load_json(student_base14_eval_ckpt))
     else:
@@ -641,7 +674,7 @@ def main() -> None:
         )
         save_json(student_base14_eval_ckpt, student_from_base14_eval)
 
-    if args.resume and student_ft14_eval_ckpt.exists():
+    if args.resume and can_resume_eval(student_ft14_eval_ckpt, args.base_qwen7_model):
         print(f"[RESUME] Skip student_from_ft14 eval, load {student_ft14_eval_ckpt}")
         student_from_ft14_eval = normalize_eval_payload(load_json(student_ft14_eval_ckpt))
     else:
