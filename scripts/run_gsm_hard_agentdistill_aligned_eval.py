@@ -1,0 +1,310 @@
+import argparse
+import json
+import re
+from collections import Counter
+from pathlib import Path
+from typing import Any, Optional
+
+from datasets import load_dataset
+from smolagents import CodeAgent, OpenAIModel
+from smolagents.monitoring import LogLevel
+from tqdm import tqdm
+
+try:
+    from smolagents import WikipediaRetrieverTool, DuckDuckGoSearchTool
+except Exception:  # noqa: BLE001
+    WikipediaRetrieverTool = None
+    DuckDuckGoSearchTool = None
+
+try:
+    import sympy as sp
+except Exception:  # noqa: BLE001
+    sp = None
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# Aligned to AgentDistill exps_research/unified_framework/processors/agent.py instruction block.
+AGENTDISTILL_STYLE_INSTRUCTION = (
+    "\n\nIMPORTANT: Always provide a 'Thought:' sequence, and a 'Code:\n```py' "
+    "sequence ending with '```<end_code>' sequence, else you will fail. "
+    "For math problems that are not multiple-choice, always output the final answer "
+    "using LaTeX \\boxed{} format. Provide the exact value (e.g., \\boxed{\\frac{9}{14}}), "
+    "not a decimal approximation (e.g., \\boxed{0.642857})."
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="GSM-hard eval aligned with AgentDistill-style settings.")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
+    parser.add_argument("--api-key", default="0")
+    parser.add_argument("--model", default="test")
+
+    parser.add_argument("--dataset-name", default="reasoning-machines/gsm-hard")
+    parser.add_argument("--dataset-config", default="default")
+    parser.add_argument("--split", default="test")
+    parser.add_argument("--limit", type=int, default=0)
+
+    # AgentDistill-like defaults
+    parser.add_argument("--num-samples", type=int, default=8)
+    parser.add_argument("--temperature", type=float, default=0.4)
+    parser.add_argument("--max-steps", type=int, default=5)
+    parser.add_argument("--max-tokens", type=int, default=1024)
+
+    parser.add_argument(
+        "--tool-mode",
+        choices=["python_only", "wikipedia", "duckduckgo"],
+        default="python_only",
+        help="Tool setup for alignment experiments.",
+    )
+
+    parser.add_argument("--output-dir", default="outputs/gsm_hard_agentdistill_aligned_eval")
+    parser.add_argument("--record-shard-size", type=int, default=1000)
+    return parser.parse_args()
+
+
+def extract_answer(text: Any) -> Optional[str]:
+    if text is None:
+        return None
+    s = str(text)
+
+    answer_tag = re.findall(r"<answer>\s*(.*?)\s*</answer>", s, flags=re.DOTALL)
+    if answer_tag:
+        s = answer_tag[-1]
+
+    boxed = re.findall(r"\\boxed{([^{}]*)}", s)
+    if boxed:
+        return boxed[-1].strip()
+
+    numbers = re.findall(r"-?\d*\.?\d+", s.replace(",", ""))
+    if numbers:
+        return numbers[-1]
+
+    return None
+
+
+def _try_sympy_equal(a: str, b: str) -> bool:
+    if sp is None:
+        return False
+    try:
+        a_expr = sp.sympify(a)
+        b_expr = sp.sympify(b)
+        return sp.simplify(a_expr - b_expr) == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def compare_answers(predicted: Optional[str], reference: Optional[str]) -> bool:
+    if predicted is None or reference is None:
+        return False
+
+    p = predicted.strip()
+    r = reference.strip()
+    if p == r:
+        return True
+
+    try:
+        return abs(float(p) - float(r)) < 1e-6
+    except Exception:  # noqa: BLE001
+        pass
+
+    return _try_sympy_equal(p, r)
+
+
+def make_model(base_url: str, api_key: str, model: str, temperature: float, max_tokens: int) -> OpenAIModel:
+    return OpenAIModel(
+        model_id=model,
+        api_base=base_url,
+        api_key=api_key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+def make_tools(tool_mode: str) -> list[Any]:
+    if tool_mode == "python_only":
+        return []
+    if tool_mode == "wikipedia":
+        if WikipediaRetrieverTool is None:
+            raise RuntimeError("WikipediaRetrieverTool is unavailable in current smolagents install.")
+        return [WikipediaRetrieverTool()]
+    if tool_mode == "duckduckgo":
+        if DuckDuckGoSearchTool is None:
+            raise RuntimeError("DuckDuckGoSearchTool is unavailable in current smolagents install.")
+        return [DuckDuckGoSearchTool()]
+    raise ValueError(f"unknown tool_mode: {tool_mode}")
+
+
+def load_examples(dataset_name: str, dataset_config: str, split: str, limit: int) -> list[dict[str, Any]]:
+    ds = load_dataset(dataset_name, dataset_config)
+    if split not in ds:
+        raise ValueError(f"split {split} not in dataset keys {list(ds.keys())}")
+    dsplit = ds[split]
+
+    if "input" in dsplit.column_names and "question" not in dsplit.column_names:
+        dsplit = dsplit.rename_column("input", "question")
+    if "target" in dsplit.column_names and "answer" not in dsplit.column_names:
+        dsplit = dsplit.rename_column("target", "answer")
+
+    rows = [dsplit[i] for i in range(len(dsplit))]
+    if limit > 0:
+        rows = rows[:limit]
+    return rows
+
+
+class JsonlShardWriter:
+    def __init__(self, out_dir: Path, prefix: str, shard_size: int):
+        self.out_dir = out_dir
+        self.prefix = prefix
+        self.shard_size = shard_size
+        self.shard_idx = 0
+        self.count = 0
+        self.paths: list[str] = []
+
+    def _path(self) -> Path:
+        if self.shard_size > 0:
+            p = self.out_dir / f"{self.prefix}_part_{self.shard_idx:03d}.jsonl"
+        else:
+            p = self.out_dir / f"{self.prefix}.jsonl"
+        if str(p) not in self.paths:
+            self.paths.append(str(p))
+        return p
+
+    def write(self, obj: dict[str, Any]) -> None:
+        if self.shard_size > 0 and self.count >= self.shard_size:
+            self.shard_idx += 1
+            self.count = 0
+        p = self._path()
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        self.count += 1
+
+
+def majority_vote_answer(preds: list[Optional[str]]) -> Optional[str]:
+    cleaned = [p for p in preds if p is not None]
+    if not cleaned:
+        return None
+    cnt = Counter(cleaned)
+    return cnt.most_common(1)[0][0]
+
+
+def main() -> None:
+    args = parse_args()
+    out_dir = ROOT / args.output_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    examples = load_examples(args.dataset_name, args.dataset_config, args.split, args.limit)
+    tools = make_tools(args.tool_mode)
+
+    rec_writer = JsonlShardWriter(out_dir, "gsm_hard_agentdistill_aligned_records", args.record_shard_size)
+    grp_writer = JsonlShardWriter(out_dir, "gsm_hard_agentdistill_aligned_grouped", max(1, args.record_shard_size // 2))
+
+    total_q = 0
+    first_correct = 0
+    any_correct = 0
+    maj_correct = 0
+
+    pbar = tqdm(examples, desc="gsm-hard aligned eval", unit="q", dynamic_ncols=True)
+    for qid, ex in enumerate(pbar):
+        paths = []
+        per_pred: list[Optional[str]] = []
+        ref = extract_answer(ex["answer"])
+
+        for sid in range(args.num_samples):
+            model_client = make_model(args.base_url, args.api_key, args.model, args.temperature, args.max_tokens)
+            agent = CodeAgent(
+                tools=tools,
+                model=model_client,
+                max_steps=args.max_steps,
+                instructions="",  # keep default system prompt from smolagents, align with AgentDistill style via user suffix.
+                additional_authorized_imports=["math", "statistics", "fractions", "decimal", "numpy", "sympy"],
+                verbosity_level=LogLevel.ERROR,
+                stream_outputs=False,
+                use_structured_outputs_internally=False,
+                code_block_tags="markdown",
+                return_full_result=True,
+            )
+
+            query = str(ex["question"]) + AGENTDISTILL_STYLE_INSTRUCTION
+            err = None
+            try:
+                full = agent.run(query, return_full_result=True)
+                final_answer = str(full.output)
+            except Exception as e:  # noqa: BLE001
+                err = f"{type(e).__name__}: {e}"
+                final_answer = f"[ERROR] {err}"
+                full = None
+
+            pred = extract_answer(final_answer)
+            per_pred.append(pred)
+            ok = compare_answers(pred, ref)
+
+            rec = {
+                "question_id": qid,
+                "sample_id": sid,
+                "question": ex["question"],
+                "ground_truth": ex["answer"],
+                "extracted_ground_truth": ref,
+                "final_answer": final_answer,
+                "extracted_prediction": pred,
+                "correct": ok,
+                "error": err,
+                "steps": full.steps if full is not None else [],
+                "token_usage": full.token_usage.dict() if (full is not None and full.token_usage is not None) else None,
+                "timing": full.timing.dict() if full is not None else {},
+                "state": full.state if full is not None else {},
+            }
+            rec_writer.write(rec)
+            paths.append(rec)
+
+        total_q += 1
+        if paths and paths[0]["correct"]:
+            first_correct += 1
+        if any(p["correct"] for p in paths):
+            any_correct += 1
+        maj_pred = majority_vote_answer(per_pred)
+        if compare_answers(maj_pred, ref):
+            maj_correct += 1
+
+        grp_writer.write(
+            {
+                "question_id": qid,
+                "question": ex["question"],
+                "ground_truth": ex["answer"],
+                "paths": paths,
+                "majority_prediction": maj_pred,
+            }
+        )
+
+        pbar.set_postfix(
+            first_acc=f"{(first_correct / total_q) if total_q else 0.0:.3f}",
+            any_acc=f"{(any_correct / total_q) if total_q else 0.0:.3f}",
+            maj_acc=f"{(maj_correct / total_q) if total_q else 0.0:.3f}",
+        )
+
+    summary = {
+        "dataset_name": args.dataset_name,
+        "dataset_config": args.dataset_config,
+        "split": args.split,
+        "limit": args.limit,
+        "model": args.model,
+        "base_url": args.base_url,
+        "tool_mode": args.tool_mode,
+        "num_samples": args.num_samples,
+        "temperature": args.temperature,
+        "max_steps": args.max_steps,
+        "max_tokens": args.max_tokens,
+        "metrics": {
+            "first_sample_accuracy": first_correct / total_q if total_q else 0.0,
+            "any_sample_accuracy": any_correct / total_q if total_q else 0.0,
+            "majority_vote_accuracy": maj_correct / total_q if total_q else 0.0,
+        },
+        "records_paths": rec_writer.paths,
+        "grouped_paths": grp_writer.paths,
+    }
+    summary_path = out_dir / "gsm_hard_agentdistill_aligned_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"summary": str(summary_path)}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
