@@ -137,7 +137,15 @@ def make_tools(tool_mode: str) -> list[Any]:
 def load_examples(dataset_name: str, dataset_config: str, split: str, limit: int) -> list[dict[str, Any]]:
     ds = load_dataset(dataset_name, dataset_config)
     if split not in ds:
-        raise ValueError(f"split {split} not in dataset keys {list(ds.keys())}")
+        fallback = None
+        for candidate in ("test", "validation", "train"):
+            if candidate in ds:
+                fallback = candidate
+                break
+        if fallback is None:
+            raise ValueError(f"split {split} not in dataset keys {list(ds.keys())}")
+        print(f"[WARN] split={split} not found, fallback to split={fallback}")
+        split = fallback
     dsplit = ds[split]
 
     if "input" in dsplit.column_names and "question" not in dsplit.column_names:
