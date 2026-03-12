@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 from research_platform_trl.core.checkpoint import StageCheckpoint
 from research_platform_trl.core.config import load_yaml_config
@@ -18,9 +19,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_deepspeed_cfg(value: Any, *, config_dir: Path) -> Any:
+    if not isinstance(value, str):
+        return value
+    p = Path(value).expanduser()
+    if not p.is_absolute():
+        p = (config_dir / p).resolve()
+    return str(p)
+
+
 def main() -> None:
     args = parse_args()
-    cfg = load_yaml_config(args.config).raw
+    loaded = load_yaml_config(args.config)
+    cfg = loaded.raw
+    cfg_dir = loaded.path.parent
 
     out_dir = Path(cfg["output"]["work_dir"]).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -60,6 +72,7 @@ def main() -> None:
             per_device_bs=int(train_cfg.get("per_device_batch_size", 1)),
             save_steps=int(train_cfg.get("save_steps", 50)),
             bf16=bool(train_cfg.get("bf16", True)),
+            deepspeed=resolve_deepspeed_cfg(train_cfg.get("deepspeed"), config_dir=cfg_dir),
             resume_from_checkpoint=train_cfg.get("resume_from_checkpoint"),
         )
         ckpt.mark_done(stage)

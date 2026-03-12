@@ -96,3 +96,25 @@ Outputs:
 - Current KD/Teacher-FT uses TRL SFT (`SFTTrainer`) with chat messages.
 - For future custom loss and RL, extend:
   - `research_platform_trl/trainers/teacher_sft.py`
+
+## DeepSpeed (HPC)
+`kd_train_runner` and `teacher_ft_runner` now support DeepSpeed through the train config:
+
+```yaml
+train:
+  ...
+  deepspeed: deepspeed_zero3.json
+```
+
+- `deepspeed` accepts either:
+  - an absolute path, or
+  - a path relative to the yaml config file location.
+- Example config file provided:
+  - `research_platform_trl/configs/deepspeed_zero3.json`
+
+Recommended launch pattern on multi-GPU nodes:
+
+```bash
+torchrun --nproc_per_node=4 -m research_platform_trl.runners.kd_train_runner \
+  --config research_platform_trl/configs/kd_train_example.yaml
+```

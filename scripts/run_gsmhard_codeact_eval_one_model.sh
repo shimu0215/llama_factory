@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-MODEL_ID=${1:?usage: run_gsmhard_codeact_eval_one_model.sh <model_id> <model_tag> <infer_yaml> <output_root> [vllm_maxlen] [vllm_gpu_util] [temperature] [max_steps] [max_tokens] [prompt_budget_tokens] [recent_steps] [api_timeout]}
+MODEL_ID=${1:?usage: run_gsmhard_codeact_eval_one_model.sh <model_id> <model_tag> <infer_yaml> <output_root> [vllm_maxlen] [vllm_gpu_util] [temperature] [max_steps] [max_tokens] [prompt_budget_tokens] [recent_steps] [api_timeout] [num_samples]}
 MODEL_TAG=${2:?missing model_tag}
 INFER_YAML=${3:?missing infer_yaml}
 OUTPUT_ROOT=${4:?missing output_root}
@@ -13,6 +13,7 @@ MAX_TOKENS=${9:-1024}
 PROMPT_BUDGET=${10:-16384}
 RECENT_STEPS=${11:-2}
 API_TIMEOUT=${12:-900}
+NUM_SAMPLES=${13:-1}
 
 WORKDIR=/scratch/wzhao20/llama_factory
 OUTDIR="${OUTPUT_ROOT}/${MODEL_TAG}"
@@ -85,7 +86,7 @@ python scripts/run_gsm_hard_smolagents_codeact.py \
   --api-key 0 \
   --model test \
   --limit 0 \
-  --num-samples 1 \
+  --num-samples "$NUM_SAMPLES" \
   --temperature "$TEMPERATURE" \
   --max-steps "$MAX_STEPS" \
   --max-tokens "$MAX_TOKENS" \

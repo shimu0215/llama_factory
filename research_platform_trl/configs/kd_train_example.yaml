@@ -17,6 +17,8 @@ train:
   per_device_batch_size: 1
   save_steps: 50
   bf16: true
+  # Optional: enable DeepSpeed by setting a config path (relative to this yaml or absolute).
+  # deepspeed: deepspeed_zero3.json
   # resume_from_checkpoint: /path/to/checkpoint
 
 output:

@@ -33,6 +33,7 @@ def train_sft_chat(
     per_device_bs: int,
     save_steps: int,
     bf16: bool,
+    deepspeed: str | dict[str, Any] | None = None,
     resume_from_checkpoint: str | None = None,
 ) -> SFTRunResult:
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
@@ -50,6 +51,7 @@ def train_sft_chat(
         logging_steps=10,
         max_length=max_length,
         bf16=bf16,
+        deepspeed=deepspeed,
         report_to="none",
         remove_unused_columns=False,
     )
