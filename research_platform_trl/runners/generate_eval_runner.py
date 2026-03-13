@@ -10,9 +10,15 @@ from research_platform_trl.core.checkpoint import StageCheckpoint
 from research_platform_trl.core.config import load_yaml_config
 from research_platform_trl.core.io_utils import append_jsonl, write_json
 from research_platform_trl.core.modeling import create_smolagents_model
-from research_platform_trl.core.prompting import load_codeact_prompt
 from research_platform_trl.data.datasets import extract_answer, is_correct, load_qa_examples
 from research_platform_trl.tools.registry import create_tools
+
+DEFAULT_QUESTION_LEVEL_INSTRUCTION = (
+    "\n\nIMPORTANT: Always provide a 'Thought:' sequence, and a 'Code:\\n```py' sequence ending with "
+    "'```<end_code>' sequence, else you will fail. For math problems that are not multiple-choice, always "
+    "output the final answer using LaTeX \\boxed{} format. Provide the exact value (e.g., \\boxed{\\frac{9}{14}}), "
+    "not a decimal approximation (e.g., \\boxed{0.642857})."
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +52,25 @@ def build_trajectory(step_dicts: list[dict[str, Any]], final_output: Any) -> tup
     return trajectory, "\n\n".join(cot_lines)
 
 
+def load_completed_samples(records_path: Path, samples: int) -> dict[int, set[int]]:
+    done: dict[int, set[int]] = {}
+    if not records_path.exists():
+        return done
+    for line in records_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+            qid = int(obj.get("question_id"))
+            sid = int(obj.get("sample_id"))
+        except Exception:
+            continue
+        if sid < 0 or sid >= samples:
+            continue
+        done.setdefault(qid, set()).add(sid)
+    return done
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_yaml_config(args.config).raw
@@ -76,20 +101,32 @@ def main() -> None:
     if args.resume and ckpt.done(stage):
         print(f"[RESUME] skip stage={stage}")
     else:
-        prompt = load_codeact_prompt(cfg["prompt"]["file"])
         tools = create_tools(cfg.get("tools", {}))
         model_cfg = cfg["model"].copy()
         model_cfg.setdefault("temperature", cfg["generation"].get("temperature", 0.7))
         model_cfg.setdefault("max_tokens", cfg["generation"].get("max_tokens", 1024))
         samples = int(cfg["generation"].get("num_samples", 1))
+        question_level_instruction = str(
+            cfg["generation"].get("question_level_instruction", DEFAULT_QUESTION_LEVEL_INSTRUCTION)
+        )
+        completed_samples = load_completed_samples(records_path, samples) if args.resume else {}
+        if args.resume:
+            done_q = sum(1 for qid in [ex["question_id"] for ex in examples] if len(completed_samples.get(qid, set())) >= samples)
+            print(f"[RESUME] loaded completed samples for {done_q}/{len(examples)} questions")
 
         total = 0
         first_correct = 0
 
         pbar = tqdm(examples, desc="generate_eval", unit="q", dynamic_ncols=True)
         for ex in pbar:
+            qid = int(ex["question_id"])
+            done_for_q = completed_samples.get(qid, set())
+            if len(done_for_q) >= samples:
+                continue
             per_q = []
             for sample_id in range(samples):
+                if sample_id in done_for_q:
+                    continue
                 model_client = create_smolagents_model(model_cfg)
                 c_cfg_raw = cfg.get("context", {})
                 comp_cfg = CompressionConfig(
@@ -102,17 +139,20 @@ def main() -> None:
                     max_observation_chars=int(c_cfg_raw.get("max_observation_chars", 1500)),
                     max_step_chars=int(c_cfg_raw.get("max_step_chars", 1200)),
                 )
+                enable_rolling_memory = bool(c_cfg_raw.get("enable_rolling_memory_code_agent", True))
                 agent = create_codeact_agent(
                     model_client=model_client,
-                    system_prompt=prompt,
+                    # Use smolagents built-in CodeAgent prompt templates without extra custom instructions.
+                    system_prompt="",
                     tools=tools,
                     max_steps=int(cfg["generation"].get("max_steps", 5)),
                     compression_cfg=comp_cfg,
+                    enable_rolling_memory=enable_rolling_memory,
                 )
 
                 error = None
                 try:
-                    full = agent.run(ex["question"], return_full_result=True)
+                    full = agent.run(ex["question"] + question_level_instruction, return_full_result=True)
                     final_answer = str(full.output)
                     steps = full.steps
                     token_usage = full.token_usage.dict() if full.token_usage is not None else None
@@ -153,12 +193,14 @@ def main() -> None:
                     {
                         "question_id": ex["question_id"],
                         "sample_id": sample_id,
-                        "visible_contexts": agent.visible_contexts,
+                        "visible_contexts": getattr(agent, "visible_contexts", []),
                         "correct": correct,
                         "error": error,
                     },
                 )
                 per_q.append(rec)
+                done_for_q.add(sample_id)
+                completed_samples[qid] = done_for_q
 
             total += 1
             if per_q and per_q[0].get("correct", False):
