@@ -210,17 +210,23 @@ def create_codeact_agent(
     tools: list[Any],
     max_steps: int,
     compression_cfg: CompressionConfig,
-) -> RollingMemoryCodeAgent:
-    return RollingMemoryCodeAgent(
-        tools=tools,
-        model=model_client,
-        instructions=system_prompt,
-        additional_authorized_imports=["math", "statistics", "fractions", "decimal", "sympy", "numpy"],
-        max_steps=max_steps,
-        verbosity_level=0,
-        stream_outputs=False,
-        use_structured_outputs_internally=False,
-        code_block_tags="markdown",
-        return_full_result=True,
-        compression=compression_cfg,
-    )
+    enable_rolling_memory: bool = True,
+) -> CodeAgent:
+    common_kwargs = {
+        "tools": tools,
+        "model": model_client,
+        "instructions": system_prompt,
+        "additional_authorized_imports": ["math", "statistics", "fractions", "decimal", "sympy", "numpy"],
+        "max_steps": max_steps,
+        "verbosity_level": 0,
+        "stream_outputs": False,
+        "use_structured_outputs_internally": False,
+        "code_block_tags": "markdown",
+        "return_full_result": True,
+    }
+    if enable_rolling_memory:
+        return RollingMemoryCodeAgent(
+            **common_kwargs,
+            compression=compression_cfg,
+        )
+    return CodeAgent(**common_kwargs)
