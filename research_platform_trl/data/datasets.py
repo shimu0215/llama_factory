@@ -36,11 +36,18 @@ def load_qa_examples(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         raise ValueError("dataset.path is required")
 
     split = cfg.get("split")
+    if split is not None and split not in ds:
+        # Be resilient to dataset variants that do not expose the requested split.
+        split = None
+
     if split is None:
         for candidate in ("test", "validation", "train"):
             if candidate in ds:
                 split = candidate
                 break
+        if split is None:
+            # Last resort: pick the first available split key.
+            split = next(iter(ds.keys()), None)
     if split is None:
         raise RuntimeError(f"Cannot infer split from dataset keys: {list(ds.keys())}")
 
