@@ -27,7 +27,7 @@ mkdir -p "$TRITON_CACHE_DIR" hpc-results
 cd /scratch/wzhao20/llama_factory
 conda activate /scratch/wzhao20/conda_envs/llama-factory311-clean
 
-export NUM_SAMPLES=1
+export NUM_SAMPLES=5
 export MAX_STEPS=5
 export MODEL_MAX_CONTEXT_TOKENS=16384
 export PROMPT_BUDGET_TOKENS=16384
