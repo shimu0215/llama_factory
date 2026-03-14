@@ -52,6 +52,20 @@ def build_trajectory(step_dicts: list[dict[str, Any]], final_output: Any) -> tup
     return trajectory, "\n\n".join(cot_lines)
 
 
+def flush_jsonl_buffers(
+    records_path: Path,
+    contexts_path: Path,
+    record_buf: list[dict[str, Any]],
+    context_buf: list[dict[str, Any]],
+) -> None:
+    for rec in record_buf:
+        append_jsonl(records_path, rec)
+    for ctx in context_buf:
+        append_jsonl(contexts_path, ctx)
+    record_buf.clear()
+    context_buf.clear()
+
+
 def load_completed_samples(records_path: Path, samples: int) -> dict[int, set[int]]:
     done: dict[int, set[int]] = {}
     if not records_path.exists():
@@ -106,6 +120,7 @@ def main() -> None:
         model_cfg.setdefault("temperature", cfg["generation"].get("temperature", 0.7))
         model_cfg.setdefault("max_tokens", cfg["generation"].get("max_tokens", 1024))
         samples = int(cfg["generation"].get("num_samples", 1))
+        flush_every_questions = int(cfg.get("output", {}).get("flush_every_questions", 5))
         question_level_instruction = str(
             cfg["generation"].get("question_level_instruction", DEFAULT_QUESTION_LEVEL_INSTRUCTION)
         )
@@ -116,6 +131,9 @@ def main() -> None:
 
         total = 0
         first_correct = 0
+        processed_questions_since_flush = 0
+        record_buf: list[dict[str, Any]] = []
+        context_buf: list[dict[str, Any]] = []
 
         pbar = tqdm(examples, desc="generate_eval", unit="q", dynamic_ncols=True)
         for ex in pbar:
@@ -187,9 +205,8 @@ def main() -> None:
                     "timing": timing,
                     "error": error,
                 }
-                append_jsonl(records_path, rec)
-                append_jsonl(
-                    contexts_path,
+                record_buf.append(rec)
+                context_buf.append(
                     {
                         "question_id": ex["question_id"],
                         "sample_id": sample_id,
@@ -203,9 +220,16 @@ def main() -> None:
                 completed_samples[qid] = done_for_q
 
             total += 1
+            processed_questions_since_flush += 1
             if per_q and per_q[0].get("correct", False):
                 first_correct += 1
             pbar.set_postfix(first_acc=f"{(first_correct / total) if total else 0.0:.3f}")
+            if processed_questions_since_flush >= flush_every_questions:
+                flush_jsonl_buffers(records_path, contexts_path, record_buf, context_buf)
+                processed_questions_since_flush = 0
+
+        if record_buf or context_buf:
+            flush_jsonl_buffers(records_path, contexts_path, record_buf, context_buf)
 
         ckpt.mark_done(stage)
 
