@@ -92,14 +92,13 @@ if [ "$VLLM_TP" -eq 1 ] && [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
   export CUDA_VISIBLE_DEVICES=0
 fi
 
-echo "[INFO] Using vLLM tensor_parallel_size=$VLLM_TP"
+echo "[INFO] Requested vLLM tensor_parallel_size=$VLLM_TP"
 echo "[INFO] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>}"
 
 env API_PORT="$PORT" \
   setsid llamafactory-cli api "$INFER_YAML" \
     model_name_or_path="$MODEL_ID" \
     infer_backend=vllm \
-    vllm_tensor_parallel_size="$VLLM_TP" \
     vllm_enforce_eager=true \
     vllm_maxlen="$VLLM_MAXLEN" \
     vllm_gpu_util="$VLLM_GPU_UTIL" \
