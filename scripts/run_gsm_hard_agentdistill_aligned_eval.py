@@ -1,11 +1,12 @@
 import argparse
+import importlib.util
 import inspect
 import json
 import re
 import warnings
 from collections import Counter
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from datasets import load_dataset
 from smolagents.agents import MultiStepAgent
@@ -54,8 +55,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
 
     # AgentDistill-like defaults
-    parser.add_argument("--num-samples", type=int, default=8)
-    parser.add_argument("--temperature", type=float, default=0.4)
+    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--max-tokens", type=int, default=1024)
 
@@ -76,10 +77,46 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _load_agentdistill_math_helpers() -> tuple[Optional[Callable[..., Any]], Optional[Callable[..., Any]]]:
+    candidates = [
+        Path("/scratch/wzhao20/AgentDistill/exps_research/unified_framework/processors/qwen_math_parser.py"),
+        Path("/Users/shimu/Downloads/DOGe-main/AgentDistill/exps_research/unified_framework/processors/qwen_math_parser.py"),
+    ]
+    for parser_path in candidates:
+        if not parser_path.exists():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("agentdistill_qwen_math_parser", parser_path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)  # type: ignore[assignment]
+            ad_extract = getattr(module, "extract_answer", None)
+            ad_math_equal = getattr(module, "math_equal", None)
+            if callable(ad_extract) and callable(ad_math_equal):
+                return ad_extract, ad_math_equal
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"Failed to load AgentDistill parser from {parser_path}: {exc}")
+    return None, None
+
+
+AD_EXTRACT_ANSWER, AD_MATH_EQUAL = _load_agentdistill_math_helpers()
+
+
 def extract_answer(text: Any) -> Optional[str]:
     if text is None:
         return None
     s = str(text)
+
+    if AD_EXTRACT_ANSWER is not None:
+        try:
+            extracted = AD_EXTRACT_ANSWER(s)  # type: ignore[misc]
+            if extracted is None:
+                return None
+            extracted_s = str(extracted).strip()
+            return extracted_s or None
+        except Exception:  # noqa: BLE001
+            pass
 
     answer_tag = re.findall(r"<answer>\s*(.*?)\s*</answer>", s, flags=re.DOTALL)
     if answer_tag:
@@ -110,6 +147,12 @@ def _try_sympy_equal(a: str, b: str) -> bool:
 def compare_answers(predicted: Optional[str], reference: Optional[str]) -> bool:
     if predicted is None or reference is None:
         return False
+
+    if AD_MATH_EQUAL is not None:
+        try:
+            return bool(AD_MATH_EQUAL(predicted, reference, timeout=True))  # type: ignore[misc]
+        except Exception:  # noqa: BLE001
+            pass
 
     p = predicted.strip()
     r = reference.strip()
@@ -161,13 +204,8 @@ def make_code_agent(tools: list[Any], model_client: OpenAIModel, max_steps: int)
         "tools": tools,
         "model": model_client,
         "max_steps": max_steps,
-        "instructions": "",  # keep default system prompt from smolagents, align with AgentDistill style via user suffix.
         "additional_authorized_imports": ["numpy", "sympy", "numpy.linalg"],
         "verbosity_level": LogLevel.ERROR,
-        "stream_outputs": False,
-        "use_structured_outputs_internally": False,
-        "code_block_tags": "markdown",
-        "return_full_result": True,
         "set_timeout": True,
     }
     # Keep kwargs accepted by CodeAgent and by its MultiStepAgent base class.
