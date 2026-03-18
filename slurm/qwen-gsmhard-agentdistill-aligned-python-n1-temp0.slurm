@@ -29,6 +29,7 @@ conda activate /scratch/wzhao20/conda_envs/llama-factory311-clean
 
 MODEL_ID="${MODEL_ID:-Qwen/Qwen2.5-0.5B-Instruct}"
 INFER_YAML="${INFER_YAML:-examples/inference/qwen25_7b.yaml}"
+ADAPTER_NAME_OR_PATH="${ADAPTER_NAME_OR_PATH:-}"
 # Use the exact 500-sample JSON used in AgentDistill paper runs.
 DATA_PATH="${DATA_PATH:-/scratch/wzhao20/AgentDistill/data_processor/math_dataset/test/gsm_hard_500_20250507.json}"
 MODEL_TAG="${MODEL_TAG:-$(echo "$MODEL_ID" | tr '/.' '__')}"
@@ -94,15 +95,21 @@ fi
 
 echo "[INFO] Requested vLLM tensor_parallel_size=$VLLM_TP"
 echo "[INFO] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>}"
+echo "[INFO] ADAPTER_NAME_OR_PATH=${ADAPTER_NAME_OR_PATH:-<none>}"
 
-env API_PORT="$PORT" \
-  setsid llamafactory-cli api "$INFER_YAML" \
-    model_name_or_path="$MODEL_ID" \
-    infer_backend=vllm \
-    vllm_enforce_eager=true \
-    vllm_maxlen="$VLLM_MAXLEN" \
-    vllm_gpu_util="$VLLM_GPU_UTIL" \
-    >"$API_LOG" 2>&1 &
+API_CMD=(
+  llamafactory-cli api "$INFER_YAML"
+  model_name_or_path="$MODEL_ID"
+  infer_backend=vllm
+  vllm_enforce_eager=true
+  vllm_maxlen="$VLLM_MAXLEN"
+  vllm_gpu_util="$VLLM_GPU_UTIL"
+)
+if [ -n "$ADAPTER_NAME_OR_PATH" ]; then
+  API_CMD+=(adapter_name_or_path="$ADAPTER_NAME_OR_PATH")
+fi
+
+env API_PORT="$PORT" setsid "${API_CMD[@]}" >"$API_LOG" 2>&1 &
 APIPID=$!
 
 wait_api_ready "$PORT" "$API_TIMEOUT"
