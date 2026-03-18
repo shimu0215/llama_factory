@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import warnings
 from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
@@ -42,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-name", default="reasoning-machines/gsm-hard")
     parser.add_argument("--dataset-config", default="default")
     parser.add_argument("--split", default="test")
+    parser.add_argument(
+        "--data-path",
+        default="",
+        help="Optional local JSON dataset path (expects AgentDistill-style {'examples': [...]} or a plain list).",
+    )
     parser.add_argument("--limit", type=int, default=0)
 
     # AgentDistill-like defaults
@@ -55,6 +61,11 @@ def parse_args() -> argparse.Namespace:
         choices=["python_only", "wikipedia", "duckduckgo"],
         default="python_only",
         help="Tool setup for alignment experiments.",
+    )
+    parser.add_argument(
+        "--strict-tool-mode",
+        action="store_true",
+        help="Fail fast if requested tool mode is unavailable instead of falling back.",
     )
 
     parser.add_argument("--output-dir", default="outputs/gsm_hard_agentdistill_aligned_eval")
@@ -120,16 +131,24 @@ def make_model(base_url: str, api_key: str, model: str, temperature: float, max_
     )
 
 
-def make_tools(tool_mode: str) -> list[Any]:
+def make_tools(tool_mode: str, strict: bool) -> list[Any]:
     if tool_mode == "python_only":
         return []
     if tool_mode == "wikipedia":
         if WikipediaRetrieverTool is None:
-            raise RuntimeError("WikipediaRetrieverTool is unavailable in current smolagents install.")
+            msg = "WikipediaRetrieverTool is unavailable in current smolagents install."
+            if strict:
+                raise RuntimeError(msg)
+            warnings.warn(msg + " Fallback to python_only.")
+            return []
         return [WikipediaRetrieverTool()]
     if tool_mode == "duckduckgo":
         if DuckDuckGoSearchTool is None:
-            raise RuntimeError("DuckDuckGoSearchTool is unavailable in current smolagents install.")
+            msg = "DuckDuckGoSearchTool is unavailable in current smolagents install."
+            if strict:
+                raise RuntimeError(msg)
+            warnings.warn(msg + " Fallback to python_only.")
+            return []
         return [DuckDuckGoSearchTool()]
     raise ValueError(f"unknown tool_mode: {tool_mode}")
 
@@ -154,6 +173,23 @@ def load_examples(dataset_name: str, dataset_config: str, split: str, limit: int
         dsplit = dsplit.rename_column("target", "answer")
 
     rows = [dsplit[i] for i in range(len(dsplit))]
+    if limit > 0:
+        rows = rows[:limit]
+    return rows
+
+
+def load_examples_from_json(data_path: Path, limit: int) -> list[dict[str, Any]]:
+    data = json.loads(data_path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        if isinstance(data.get("examples"), list):
+            rows = data["examples"]
+        else:
+            raise ValueError(f"Unsupported JSON object format in {data_path}")
+    elif isinstance(data, list):
+        rows = data
+    else:
+        raise ValueError(f"Unsupported dataset JSON type in {data_path}: {type(data).__name__}")
+
     if limit > 0:
         rows = rows[:limit]
     return rows
@@ -200,8 +236,20 @@ def main() -> None:
     out_dir = ROOT / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    examples = load_examples(args.dataset_name, args.dataset_config, args.split, args.limit)
-    tools = make_tools(args.tool_mode)
+    if args.data_path:
+        data_path = Path(args.data_path).expanduser()
+        if not data_path.is_absolute():
+            data_path = (ROOT / data_path).resolve()
+        examples = load_examples_from_json(data_path, args.limit)
+        dataset_name = str(data_path)
+        dataset_config = "local_json"
+        split = "file"
+    else:
+        examples = load_examples(args.dataset_name, args.dataset_config, args.split, args.limit)
+        dataset_name = args.dataset_name
+        dataset_config = args.dataset_config
+        split = args.split
+    tools = make_tools(args.tool_mode, args.strict_tool_mode)
 
     rec_writer = JsonlShardWriter(out_dir, "gsm_hard_agentdistill_aligned_records", args.record_shard_size)
     grp_writer = JsonlShardWriter(out_dir, "gsm_hard_agentdistill_aligned_grouped", max(1, args.record_shard_size // 2))
@@ -223,8 +271,9 @@ def main() -> None:
                 tools=tools,
                 model=model_client,
                 max_steps=args.max_steps,
+                set_timeout=True,
                 instructions="",  # keep default system prompt from smolagents, align with AgentDistill style via user suffix.
-                additional_authorized_imports=["math", "statistics", "fractions", "decimal", "numpy", "sympy"],
+                additional_authorized_imports=["numpy", "sympy", "numpy.linalg"],
                 verbosity_level=LogLevel.ERROR,
                 stream_outputs=False,
                 use_structured_outputs_internally=False,
@@ -290,9 +339,10 @@ def main() -> None:
         )
 
     summary = {
-        "dataset_name": args.dataset_name,
-        "dataset_config": args.dataset_config,
-        "split": args.split,
+        "dataset_name": dataset_name,
+        "dataset_config": dataset_config,
+        "split": split,
+        "data_path": args.data_path or None,
         "limit": args.limit,
         "model": args.model,
         "base_url": args.base_url,
