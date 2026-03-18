@@ -3,7 +3,7 @@
 #SBATCH --qos=gpu
 #SBATCH --partition=contrib-gpuq
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:A100.80gb:1
+#SBATCH --gres=gpu:A100.80gb:2
 #SBATCH --output=hpc-results/qwen-aligned-py-t0-%j.out
 #SBATCH --error=hpc-results/qwen-aligned-py-t0-%j.err
 #SBATCH --ntasks=1
@@ -36,6 +36,7 @@ OUT_DIR="${OUT_DIR:-outputs/${MODEL_TAG}_gsmhard_aligned_python_n1_t0_${SLURM_JO
 API_TIMEOUT="${API_TIMEOUT:-1200}"
 VLLM_MAXLEN="${VLLM_MAXLEN:-16384}"
 VLLM_GPU_UTIL="${VLLM_GPU_UTIL:-0.65}"
+VLLM_TP="${VLLM_TP:-1}"
 EVAL_LIMIT="${EVAL_LIMIT:-0}"
 EVAL_NUM_SAMPLES="${EVAL_NUM_SAMPLES:-1}"
 EVAL_TEMPERATURE="${EVAL_TEMPERATURE:-0.0}"
@@ -83,11 +84,22 @@ trap cleanup EXIT
 
 PORT=$(pick_port)
 API_LOG="hpc-results/${MODEL_TAG}-aligned-api-${SLURM_JOB_ID}.log"
+if [ "$VLLM_TP" -le 0 ]; then
+  VLLM_TP=1
+fi
+
+if [ "$VLLM_TP" -eq 1 ] && [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  export CUDA_VISIBLE_DEVICES=0
+fi
+
+echo "[INFO] Using vLLM tensor_parallel_size=$VLLM_TP"
+echo "[INFO] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>}"
 
 env API_PORT="$PORT" \
   setsid llamafactory-cli api "$INFER_YAML" \
     model_name_or_path="$MODEL_ID" \
     infer_backend=vllm \
+    vllm_tensor_parallel_size="$VLLM_TP" \
     vllm_enforce_eager=true \
     vllm_maxlen="$VLLM_MAXLEN" \
     vllm_gpu_util="$VLLM_GPU_UTIL" \
