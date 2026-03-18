@@ -5,6 +5,14 @@ MODEL_ID=${1:?usage: run_trl_gsmhard_eval_model_aligned.sh <model_id> <model_tag
 MODEL_TAG=${2:?missing model_tag}
 INFER_YAML=${3:?missing infer_yaml}
 
+export HF_HOME="${HF_HOME:-/scratch/wzhao20/hf_cache}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/scratch/wzhao20/.cache}"
+export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-/scratch/wzhao20/vllm_cache}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/scratch/wzhao20/triton_cache}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/scratch/wzhao20/torchinductor_cache}"
+
 RESULT_ROOT="${RESULT_ROOT:-/scratch/wzhao20/llama_factory/outputs/trl_results_aligned}"
 RUN_DIR="${RUN_DIR:-$RESULT_ROOT/${MODEL_TAG}}"
 DATA_DIR="$RUN_DIR/trl_generated_data"
@@ -27,7 +35,7 @@ DATA_PATH="${DATA_PATH:-}"
 ENABLE_ROLLING_MEMORY_CODE_AGENT="${ENABLE_ROLLING_MEMORY_CODE_AGENT:-false}"
 ENABLE_CONTEXT_COMPRESSION="${ENABLE_CONTEXT_COMPRESSION:-true}"
 
-mkdir -p "$RESULT_ROOT" "$RUN_DIR" "$DATA_DIR"
+mkdir -p "$RESULT_ROOT" "$RUN_DIR" "$DATA_DIR" "$HF_HOME" "$XDG_CACHE_HOME" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
 
 pick_port() {
   python - <<'PY'
