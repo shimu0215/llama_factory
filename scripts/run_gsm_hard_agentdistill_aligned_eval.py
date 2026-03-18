@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from datasets import load_dataset
+from smolagents.agents import MultiStepAgent
 from smolagents import CodeAgent, OpenAIModel
 from smolagents.monitoring import LogLevel
 from tqdm import tqdm
@@ -168,7 +169,10 @@ def make_code_agent(tools: list[Any], model_client: OpenAIModel, max_steps: int)
         "return_full_result": True,
         "set_timeout": True,
     }
-    allowed = set(inspect.signature(CodeAgent.__init__).parameters)
+    # Keep kwargs accepted by CodeAgent and by its MultiStepAgent base class.
+    allowed = set(inspect.signature(CodeAgent.__init__).parameters) | set(
+        inspect.signature(MultiStepAgent.__init__).parameters
+    )
     filtered = {k: v for k, v in kwargs.items() if k in allowed}
     return CodeAgent(**filtered)
 
