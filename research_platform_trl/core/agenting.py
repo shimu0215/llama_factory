@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from smolagents import CodeAgent
+from smolagents.agents import MultiStepAgent
 
 
 @dataclass
@@ -216,14 +218,15 @@ def create_codeact_agent(
         "tools": tools,
         "model": model_client,
         "instructions": system_prompt,
-        "additional_authorized_imports": ["math", "statistics", "fractions", "decimal", "sympy", "numpy"],
+        "additional_authorized_imports": ["math", "statistics", "fractions", "decimal", "sympy", "numpy", "numpy.linalg"],
         "max_steps": max_steps,
         "verbosity_level": 0,
-        "stream_outputs": False,
-        "use_structured_outputs_internally": False,
-        "code_block_tags": "markdown",
-        "return_full_result": True,
+        "set_timeout": True,
     }
+    allowed = set(inspect.signature(CodeAgent.__init__).parameters) | set(
+        inspect.signature(MultiStepAgent.__init__).parameters
+    )
+    common_kwargs = {k: v for k, v in common_kwargs.items() if k in allowed}
     if enable_rolling_memory:
         return RollingMemoryCodeAgent(
             **common_kwargs,

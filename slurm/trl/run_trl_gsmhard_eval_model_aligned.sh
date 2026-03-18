@@ -23,6 +23,7 @@ API_READY_TIMEOUT="${API_READY_TIMEOUT:-1200}"
 FLUSH_EVERY_QUESTIONS="${FLUSH_EVERY_QUESTIONS:-1}"
 DATASET_SPLIT="${DATASET_SPLIT:-train}"
 DATASET_LIMIT="${DATASET_LIMIT:-0}"
+DATA_PATH="${DATA_PATH:-}"
 ENABLE_ROLLING_MEMORY_CODE_AGENT="${ENABLE_ROLLING_MEMORY_CODE_AGENT:-false}"
 ENABLE_CONTEXT_COMPRESSION="${ENABLE_CONTEXT_COMPRESSION:-true}"
 
@@ -99,10 +100,23 @@ model:
   max_tokens: ${MAX_TOKENS}
 
 dataset:
+CFGEOF
+
+if [[ -n "$DATA_PATH" ]]; then
+cat >> "$CFG_PATH" <<CFGEOF
+  data_path: ${DATA_PATH}
+  limit: ${DATASET_LIMIT}
+CFGEOF
+else
+cat >> "$CFG_PATH" <<CFGEOF
   path: reasoning-machines/gsm-hard
   config: default
   split: ${DATASET_SPLIT}
   limit: ${DATASET_LIMIT}
+CFGEOF
+fi
+
+cat >> "$CFG_PATH" <<CFGEOF
 
 tools:
   enabled:
