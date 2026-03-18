@@ -217,12 +217,13 @@ def create_codeact_agent(
     common_kwargs = {
         "tools": tools,
         "model": model_client,
-        "instructions": system_prompt,
         "additional_authorized_imports": ["math", "statistics", "fractions", "decimal", "sympy", "numpy", "numpy.linalg"],
         "max_steps": max_steps,
         "verbosity_level": 0,
         "set_timeout": True,
     }
+    if system_prompt:
+        common_kwargs["instructions"] = system_prompt
     allowed = set(inspect.signature(CodeAgent.__init__).parameters) | set(
         inspect.signature(MultiStepAgent.__init__).parameters
     )
