@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import re
 import warnings
@@ -153,6 +154,25 @@ def make_tools(tool_mode: str, strict: bool) -> list[Any]:
     raise ValueError(f"unknown tool_mode: {tool_mode}")
 
 
+def make_code_agent(tools: list[Any], model_client: OpenAIModel, max_steps: int) -> CodeAgent:
+    kwargs: dict[str, Any] = {
+        "tools": tools,
+        "model": model_client,
+        "max_steps": max_steps,
+        "instructions": "",  # keep default system prompt from smolagents, align with AgentDistill style via user suffix.
+        "additional_authorized_imports": ["numpy", "sympy", "numpy.linalg"],
+        "verbosity_level": LogLevel.ERROR,
+        "stream_outputs": False,
+        "use_structured_outputs_internally": False,
+        "code_block_tags": "markdown",
+        "return_full_result": True,
+        "set_timeout": True,
+    }
+    allowed = set(inspect.signature(CodeAgent.__init__).parameters)
+    filtered = {k: v for k, v in kwargs.items() if k in allowed}
+    return CodeAgent(**filtered)
+
+
 def load_examples(dataset_name: str, dataset_config: str, split: str, limit: int) -> list[dict[str, Any]]:
     ds = load_dataset(dataset_name, dataset_config)
     if split not in ds:
@@ -267,19 +287,7 @@ def main() -> None:
 
         for sid in range(args.num_samples):
             model_client = make_model(args.base_url, args.api_key, args.model, args.temperature, args.max_tokens)
-            agent = CodeAgent(
-                tools=tools,
-                model=model_client,
-                max_steps=args.max_steps,
-                set_timeout=True,
-                instructions="",  # keep default system prompt from smolagents, align with AgentDistill style via user suffix.
-                additional_authorized_imports=["numpy", "sympy", "numpy.linalg"],
-                verbosity_level=LogLevel.ERROR,
-                stream_outputs=False,
-                use_structured_outputs_internally=False,
-                code_block_tags="markdown",
-                return_full_result=True,
-            )
+            agent = make_code_agent(tools=tools, model_client=model_client, max_steps=args.max_steps)
 
             query = str(ex["question"]) + AGENTDISTILL_STYLE_INSTRUCTION
             err = None
