@@ -37,6 +37,10 @@ API_TIMEOUT="${API_TIMEOUT:-1200}"
 VLLM_MAXLEN="${VLLM_MAXLEN:-16384}"
 VLLM_GPU_UTIL="${VLLM_GPU_UTIL:-0.65}"
 EVAL_LIMIT="${EVAL_LIMIT:-0}"
+EVAL_NUM_SAMPLES="${EVAL_NUM_SAMPLES:-1}"
+EVAL_TEMPERATURE="${EVAL_TEMPERATURE:-0.0}"
+EVAL_MAX_STEPS="${EVAL_MAX_STEPS:-5}"
+EVAL_MAX_TOKENS="${EVAL_MAX_TOKENS:-1024}"
 
 pick_port() {
   python - <<'PY'
@@ -98,10 +102,10 @@ python scripts/run_gsm_hard_agentdistill_aligned_eval.py \
   --model test \
   --data-path "$DATA_PATH" \
   --limit "$EVAL_LIMIT" \
-  --num-samples 1 \
-  --temperature 0.0 \
-  --max-steps 5 \
-  --max-tokens 1024 \
+  --num-samples "$EVAL_NUM_SAMPLES" \
+  --temperature "$EVAL_TEMPERATURE" \
+  --max-steps "$EVAL_MAX_STEPS" \
+  --max-tokens "$EVAL_MAX_TOKENS" \
   --tool-mode python_only \
   --output-dir "$OUT_DIR"
 
