@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from smolagents import CodeAgent
 from smolagents.agents import MultiStepAgent
+from smolagents.monitoring import LogLevel
 
 
 @dataclass
@@ -213,14 +214,16 @@ def create_codeact_agent(
     max_steps: int,
     compression_cfg: CompressionConfig,
     enable_rolling_memory: bool = True,
+    code_block_tags: str | tuple[str, str] | None = None,
 ) -> CodeAgent:
     common_kwargs = {
         "tools": tools,
         "model": model_client,
-        "additional_authorized_imports": ["math", "statistics", "fractions", "decimal", "sympy", "numpy", "numpy.linalg"],
+        "additional_authorized_imports": ["numpy", "sympy", "numpy.linalg"],
         "max_steps": max_steps,
-        "verbosity_level": 0,
+        "verbosity_level": LogLevel.ERROR,
         "set_timeout": True,
+        "code_block_tags": code_block_tags,
     }
     if system_prompt:
         common_kwargs["instructions"] = system_prompt

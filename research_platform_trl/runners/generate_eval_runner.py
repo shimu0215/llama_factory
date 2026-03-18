@@ -159,6 +159,9 @@ def main() -> None:
                     max_step_chars=int(c_cfg_raw.get("max_step_chars", 1200)),
                 )
                 enable_rolling_memory = bool(c_cfg_raw.get("enable_rolling_memory_code_agent", True))
+                code_block_tags = None
+                if "```python" in question_level_instruction:
+                    code_block_tags = "markdown"
                 agent = create_codeact_agent(
                     model_client=model_client,
                     # Use smolagents built-in CodeAgent prompt templates without extra custom instructions.
@@ -167,6 +170,7 @@ def main() -> None:
                     max_steps=int(cfg["generation"].get("max_steps", 5)),
                     compression_cfg=comp_cfg,
                     enable_rolling_memory=enable_rolling_memory,
+                    code_block_tags=code_block_tags,
                 )
 
                 error = None
