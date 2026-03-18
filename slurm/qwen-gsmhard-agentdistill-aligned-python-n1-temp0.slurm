@@ -36,6 +36,7 @@ OUT_DIR="${OUT_DIR:-outputs/${MODEL_TAG}_gsmhard_aligned_python_n1_t0_${SLURM_JO
 API_TIMEOUT="${API_TIMEOUT:-1200}"
 VLLM_MAXLEN="${VLLM_MAXLEN:-16384}"
 VLLM_GPU_UTIL="${VLLM_GPU_UTIL:-0.65}"
+EVAL_LIMIT="${EVAL_LIMIT:-0}"
 
 pick_port() {
   python - <<'PY'
@@ -96,7 +97,7 @@ python scripts/run_gsm_hard_agentdistill_aligned_eval.py \
   --api-key 0 \
   --model test \
   --data-path "$DATA_PATH" \
-  --limit 0 \
+  --limit "$EVAL_LIMIT" \
   --num-samples 1 \
   --temperature 0.0 \
   --max-steps 5 \
