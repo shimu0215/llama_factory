@@ -4,7 +4,7 @@ import inspect
 import json
 import re
 import warnings
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -74,6 +74,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--output-dir", default="outputs/gsm_hard_agentdistill_aligned_eval")
     parser.add_argument("--record-shard-size", type=int, default=1000)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from existing output shards by skipping already completed question_id values.",
+    )
     return parser.parse_args()
 
 
@@ -285,6 +290,101 @@ class JsonlShardWriter:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
         self.count += 1
 
+    def resume_from_existing(self) -> None:
+        if self.shard_size > 0:
+            files = sorted(self.out_dir.glob(f"{self.prefix}_part_*.jsonl"))
+            if not files:
+                return
+            idx_re = re.compile(rf"{re.escape(self.prefix)}_part_(\d+)\.jsonl$")
+            indexed: list[tuple[int, Path]] = []
+            for path in files:
+                m = idx_re.search(path.name)
+                if m is None:
+                    continue
+                indexed.append((int(m.group(1)), path))
+            if not indexed:
+                return
+            indexed.sort(key=lambda x: x[0])
+            self.paths = [str(p) for _, p in indexed]
+            self.shard_idx, last_file = indexed[-1]
+            with last_file.open("r", encoding="utf-8") as f:
+                self.count = sum(1 for _ in f)
+            return
+
+        path = self.out_dir / f"{self.prefix}.jsonl"
+        if not path.exists():
+            return
+        self.paths = [str(path)]
+        with path.open("r", encoding="utf-8") as f:
+            self.count = sum(1 for _ in f)
+
+
+def _iter_jsonl_records(out_dir: Path, prefix: str) -> list[Path]:
+    files = sorted(out_dir.glob(f"{prefix}_part_*.jsonl"))
+    if files:
+        idx_re = re.compile(rf"{re.escape(prefix)}_part_(\d+)\.jsonl$")
+        files = sorted(
+            [p for p in files if idx_re.search(p.name)],
+            key=lambda p: int(idx_re.search(p.name).group(1)),  # type: ignore[union-attr]
+        )
+        return files
+    single = out_dir / f"{prefix}.jsonl"
+    return [single] if single.exists() else []
+
+
+def load_resume_state(out_dir: Path) -> tuple[set[int], int, int, int, int]:
+    files = _iter_jsonl_records(out_dir, "gsm_hard_agentdistill_aligned_records")
+    if not files:
+        return set(), 0, 0, 0, 0
+
+    per_q: dict[int, dict[str, Any]] = defaultdict(lambda: {"preds": {}, "corrects": {}, "ref": None})
+    completed_qids: set[int] = set()
+
+    for path in files:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                qid = rec.get("question_id")
+                sid = rec.get("sample_id")
+                if not isinstance(qid, int) or not isinstance(sid, int):
+                    continue
+                completed_qids.add(qid)
+                row = per_q[qid]
+                row["preds"][sid] = rec.get("extracted_prediction")
+                row["corrects"][sid] = bool(rec.get("correct", False))
+                if row["ref"] is None and rec.get("extracted_ground_truth") is not None:
+                    row["ref"] = str(rec.get("extracted_ground_truth"))
+
+    total_q = 0
+    first_correct = 0
+    any_correct = 0
+    maj_correct = 0
+    for qid in sorted(per_q):
+        row = per_q[qid]
+        if not row["corrects"]:
+            continue
+        sample_ids = sorted(row["corrects"])
+        first_sid = sample_ids[0]
+        preds = [row["preds"].get(sid) for sid in sample_ids]
+        ref = row["ref"]
+
+        total_q += 1
+        if row["corrects"].get(first_sid):
+            first_correct += 1
+        if any(row["corrects"].get(sid, False) for sid in sample_ids):
+            any_correct += 1
+        maj_pred = majority_vote_answer(preds)
+        if ref is not None and compare_answers(maj_pred, ref):
+            maj_correct += 1
+
+    return completed_qids, total_q, first_correct, any_correct, maj_correct
+
 
 def majority_vote_answer(preds: list[Optional[str]]) -> Optional[str]:
     cleaned = [p for p in preds if p is not None]
@@ -321,9 +421,19 @@ def main() -> None:
     first_correct = 0
     any_correct = 0
     maj_correct = 0
+    pending: list[tuple[int, dict[str, Any]]] = [(qid, ex) for qid, ex in enumerate(examples)]
+    if args.resume:
+        completed_qids, total_q, first_correct, any_correct, maj_correct = load_resume_state(out_dir)
+        rec_writer.resume_from_existing()
+        grp_writer.resume_from_existing()
+        pending = [(qid, ex) for qid, ex in pending if qid not in completed_qids]
+        print(
+            f"[RESUME] loaded {len(completed_qids)} completed questions, "
+            f"remaining {len(pending)} questions."
+        )
 
-    pbar = tqdm(examples, desc="gsm-hard aligned eval", unit="q", dynamic_ncols=True)
-    for qid, ex in enumerate(pbar):
+    pbar = tqdm(pending, desc="gsm-hard aligned eval", unit="q", dynamic_ncols=True)
+    for qid, ex in pbar:
         paths = []
         per_pred: list[Optional[str]] = []
         ref = extract_answer(ex["answer"])
