@@ -12,6 +12,10 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/scratch/wzhao20/.cache}"
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-/scratch/wzhao20/vllm_cache}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/scratch/wzhao20/triton_cache}"
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/scratch/wzhao20/torchinductor_cache}"
+AGENTDISTILL_SRC="${AGENTDISTILL_SRC:-/scratch/wzhao20/AgentDistill/src}"
+if [[ -d "$AGENTDISTILL_SRC" ]]; then
+  export PYTHONPATH="$AGENTDISTILL_SRC${PYTHONPATH:+:$PYTHONPATH}"
+fi
 
 RESULT_ROOT="${RESULT_ROOT:-/scratch/wzhao20/llama_factory/outputs/trl_results_aligned}"
 RUN_DIR="${RUN_DIR:-$RESULT_ROOT/${MODEL_TAG}}"
