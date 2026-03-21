@@ -14,10 +14,10 @@ from research_platform_trl.data.datasets import extract_answer, is_correct, load
 from research_platform_trl.tools.registry import create_tools
 
 DEFAULT_QUESTION_LEVEL_INSTRUCTION = (
-    "\n\nIMPORTANT: Always provide a 'Thought:' sequence, and a 'Code:\\n```python' sequence ending with "
-    "'```<end_code>' sequence, else you will fail. Call the function final_answer(...) exactly once at the end; "
-    "never assign to a variable named final_answer. For math problems that are not multiple-choice, always "
-    "output the final answer using LaTeX \\boxed{} format. Provide the exact value (e.g., \\boxed{\\frac{9}{14}}), "
+    "\n\nIMPORTANT: Always provide a 'Thought:' sequence, and a 'Code:\n```py' "
+    "sequence ending with '```<end_code>' sequence, else you will fail. "
+    "For math problems that are not multiple-choice, always output the final answer "
+    "using LaTeX \\boxed{} format. Provide the exact value (e.g., \\boxed{\\frac{9}{14}}), "
     "not a decimal approximation (e.g., \\boxed{0.642857})."
 )
 
@@ -160,7 +160,7 @@ def main() -> None:
                 )
                 enable_rolling_memory = bool(c_cfg_raw.get("enable_rolling_memory_code_agent", True))
                 code_block_tags = None
-                if "```python" in question_level_instruction:
+                if "```python" in question_level_instruction or "```py" in question_level_instruction:
                     code_block_tags = "markdown"
                 agent = create_codeact_agent(
                     model_client=model_client,
