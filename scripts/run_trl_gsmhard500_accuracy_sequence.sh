@@ -1,10 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-set +u
-source ~/.bashrc
-set -u
-
 source /home/wzhao20/miniconda3/etc/profile.d/conda.sh
 conda activate /scratch/wzhao20/conda_envs/llama-factory311-clean
 
