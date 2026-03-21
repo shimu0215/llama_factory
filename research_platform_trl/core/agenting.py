@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
 import inspect
+import re
+from textwrap import dedent
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -19,6 +22,75 @@ class CompressionConfig:
     max_summary_chars: int = 1200
     max_observation_chars: int = 1500
     max_step_chars: int = 1200
+
+
+def _agentdistill_parse_code_blobs(text: str) -> str:
+    pattern = r"```(?:py|python)?\n(.*?)\n```"
+    matches = re.findall(pattern, text, re.DOTALL)
+    if matches:
+        return "\n\n".join(match.strip() for match in matches)
+    try:
+        ast.parse(text)
+        return text
+    except SyntaxError:
+        pass
+    if "final" in text and "answer" in text:
+        raise ValueError(
+            dedent(
+                f"""
+                Your code snippet is invalid, because the regex pattern {pattern} was not found in it.
+                Here is your code snippet:
+                {text}
+                It seems like you're trying to return the final answer, you can do it as follows:
+                Code:
+                ```py
+                final_answer("YOUR FINAL ANSWER HERE")
+                ```<end_code>
+                """
+            ).strip()
+        )
+    raise ValueError(
+        dedent(
+            f"""
+            Your code snippet is invalid, because the regex pattern {pattern} was not found in it.
+            Here is your code snippet:
+            {text}
+            Make sure to include code with the correct pattern, for instance:
+            Thoughts: Your thoughts
+            Code:
+            ```py
+            # Your python code here
+            ```<end_code>
+            """
+        ).strip()
+    )
+
+
+def _agentdistill_fix_final_answer_code(code: str) -> str:
+    assignment_pattern = r"(?<!\.)(?<!\w)\bfinal_answer\s*="
+    if "final_answer(" not in code or not re.search(assignment_pattern, code):
+        return code
+    assignment_regex = r"(?<!\.)(?<!\w)(\bfinal_answer)(\s*=)"
+    code = re.sub(assignment_regex, r"final_answer_variable\2", code)
+    variable_regex = r"(?<!\.)(?<!\w)(\bfinal_answer\b)(?!\s*\()"
+    code = re.sub(variable_regex, "final_answer_variable", code)
+    return code
+
+
+def _patch_smolagents_agentdistill_compat() -> None:
+    try:
+        import smolagents.agents as sm_agents
+        import smolagents.local_python_executor as sm_executor
+        import smolagents.utils as sm_utils
+    except Exception:  # noqa: BLE001
+        return
+
+    sm_utils.parse_code_blobs = _agentdistill_parse_code_blobs
+    sm_executor.fix_final_answer_code = _agentdistill_fix_final_answer_code
+    if hasattr(sm_agents, "parse_code_blobs"):
+        sm_agents.parse_code_blobs = _agentdistill_parse_code_blobs
+    if hasattr(sm_agents, "fix_final_answer_code"):
+        sm_agents.fix_final_answer_code = _agentdistill_fix_final_answer_code
 
 
 class RollingMemoryCodeAgent(CodeAgent):
@@ -216,6 +288,7 @@ def create_codeact_agent(
     enable_rolling_memory: bool = True,
     code_block_tags: str | tuple[str, str] | None = None,
 ) -> CodeAgent:
+    _patch_smolagents_agentdistill_compat()
     common_kwargs = {
         "tools": tools,
         "model": model_client,
